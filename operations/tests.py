@@ -150,6 +150,32 @@ class WorkflowTests(TestCase):
         self.assertEqual(len(rows),1)
         c.force_login(outsider); outsider_rows=c.get('/api/emergencies/').json()['results']
         self.assertEqual(len(outsider_rows),1); self.assertEqual(outsider_rows[0]['reference'],'DR-CITIZEN-OTHER-01')
+    def test_public_emergency_feed_is_system_wide_verified_and_privacy_limited(self):
+        registration=self.post(Client(),'/api/register/',{'name':'New Feed Citizen','email':'feed.citizen@test.local','password':'password123','confirm':'password123','role':'CITIZEN'})
+        self.assertEqual(registration.status_code,201,registration.content)
+        outsider=User.objects.get(username='feed.citizen@test.local')
+        public=Emergency.objects.create(reference='DR-PUBLIC-FEED-01',reporter=outsider,category='Flood',description='Flood response needed; contact 555-123-4567 or help@example.com',location='Private street, Amritsar, Punjab',address='Private street',district='Amritsar',priority='HIGH',status='IN_PROGRESS',verification='Verified',accepted_by=self.ngo)
+        Emergency.objects.create(reference='DR-PUBLIC-PENDING',reporter=outsider,category='Fire',description='Unverified report',location='Ludhiana, Punjab',district='Ludhiana',verification='Pending')
+        Emergency.objects.create(reference='DR-PUBLIC-CANCELLED',reporter=outsider,category='Fire',description='Cancelled report',location='Patiala, Punjab',district='Patiala',status='CANCELLED',verification='Verified')
+        Advisory.objects.create(title='Published safety notice',category='Weather',body='Follow official flood guidance.',published=True)
+        Advisory.objects.create(title='Private draft',category='Weather',body='Not published.',published=False)
+        client=Client(); client.force_login(self.citizen)
+        response=client.get('/api/public-feed/')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual([row['reference'] for row in response.json()['results']],['DR-PUBLIC-FEED-01'])
+        row=response.json()['results'][0]
+        self.assertEqual((row['district'],row['status'],row['organization']),('Amritsar','IN_PROGRESS',self.ngo.name))
+        self.assertNotIn('reporter',row); self.assertNotIn('address',row); self.assertNotIn('location',row); self.assertNotIn('assignments',row)
+        self.assertNotIn('555-123-4567',row['summary']); self.assertNotIn('help@example.com',row['summary'])
+        self.assertEqual(client.get('/api/public-feed/?district=Amritsar&status=IN_PROGRESS').json()['pagination']['total'],1)
+        self.assertEqual(client.get('/api/emergencies/').json()['results'],[])
+        self.assertEqual(client.get('/api/advisories/').json()['results'][0]['title'],'Published safety notice')
+        public.status='RESOLVED'; public.save(update_fields=['status','updated_at'])
+        updated=client.get('/api/public-feed/').json()['results'][0]
+        self.assertEqual(updated['status'],'RESOLVED')
+        client.force_login(outsider)
+        self.assertEqual(client.get('/api/public-feed/').json()['pagination']['total'],1)
+        self.assertEqual({row['reference'] for row in client.get('/api/emergencies/').json()['results']},{'DR-PUBLIC-FEED-01','DR-PUBLIC-PENDING','DR-PUBLIC-CANCELLED'})
     def test_approved_government_official_can_report_and_track_an_emergency(self):
         official=Client(); official.force_login(self.official)
         result=self.post(official,'/api/emergencies/',{'category':'Flood','description':'Road cut off by rising water','location':'Test town, Ward 2','affected':12})

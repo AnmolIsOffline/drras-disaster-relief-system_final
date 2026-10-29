@@ -58,12 +58,25 @@ input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;bo
 .overview-requests{grid-column:span 7}
 .overview-contributions{grid-column:span 5}
 .overview-deliveries{grid-column:span 7}
-.overview-advisories{grid-column:span 7}
+.overview-advisories{grid-column:span 5}
 .overview-notifications{grid-column:span 5}
 .citizen-overview-grid h3{margin:2px 0 12px}
 .citizen-overview-grid .table-wrap{max-width:100%;overflow-x:auto}
 .overview-delivery-list,.overview-advisory-list,.overview-notification-list{display:grid;gap:10px}
 .overview-delivery-list .public-card,.overview-advisory-list .public-card,.overview-notification-list .public-card{padding:14px}
+.overview-advisory-list .public-card h4{margin:8px 0 6px;overflow-wrap:anywhere}
+.overview-advisory-list .public-card p{margin:0;color:var(--muted);line-height:1.55;overflow-wrap:anywhere}
+.citizen-public-advisories{display:grid;gap:20px;min-width:0}
+.public-feed-filters{display:grid;grid-template-columns:minmax(180px,2fr) repeat(4,minmax(130px,1fr)) auto;gap:10px;align-items:end}
+.public-feed-filters label{display:grid;gap:5px;font-size:12px;color:var(--muted)}
+.public-feed-filters input,.public-feed-filters select{width:100%;min-width:0}
+.public-feed-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.public-feed-card{min-width:0;overflow-wrap:anywhere}
+.public-feed-card h4{margin:10px 0 8px;font-size:17px}
+.public-feed-card p{line-height:1.65;white-space:pre-wrap}
+.public-feed-meta{display:flex;flex-wrap:wrap;gap:7px 12px;color:var(--muted);font-size:12px}
+.public-feed-pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}
+.overview-advisory-link{margin-top:12px}
 .citizen-emergency-form{width:100%;}
 .citizen-emergency-form .location-picker{min-width:0}
 .emergency-map{height:clamp(320px,38vw,480px)}
@@ -83,5 +96,5 @@ input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;bo
 .citizen-emergency-form .vulnerable-counts legend{padding:0 7px;color:var(--muted);font-size:12px;font-weight:650}
 .citizen-emergency-form .vulnerable-counts label{display:grid;gap:6px}
 .emergency-map{height:300px;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:12px}
-@media(max-width:950px){.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr)}.citizen-workspace .main{width:100%}.citizen-overview-grid>.public-card{grid-column:1/-1}.citizen-profile-card{align-items:flex-start;flex-direction:column}.citizen-emergency-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:640px){.citizen-workspace .main{padding:17px 13px}.citizen-workspace[data-section="Overview"] .large-panel{padding:13px}.citizen-overview-grid{grid-template-columns:minmax(0,1fr);gap:12px}.citizen-overview-grid>.public-card{grid-column:1}.citizen-profile-form{grid-template-columns:1fr}.citizen-emergency-form{grid-template-columns:1fr}.citizen-emergency-form .vulnerable-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.emergency-map{height:310px}.citizen-workspace .records{min-width:640px}}
+@media(max-width:950px){.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr)}.citizen-workspace .main{width:100%}.citizen-overview-grid>.public-card{grid-column:1/-1}.citizen-profile-card{align-items:flex-start;flex-direction:column}.citizen-emergency-form{grid-template-columns:repeat(2,minmax(0,1fr))}.public-feed-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.citizen-workspace .main{padding:17px 13px}.citizen-workspace[data-section="Overview"] .large-panel{padding:13px}.citizen-overview-grid{grid-template-columns:minmax(0,1fr);gap:12px}.citizen-overview-grid>.public-card{grid-column:1}.citizen-profile-form{grid-template-columns:1fr}.citizen-emergency-form{grid-template-columns:1fr}.citizen-emergency-form .vulnerable-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.emergency-map{height:310px}.citizen-workspace .records{min-width:640px}.public-feed-filters,.public-feed-list{grid-template-columns:minmax(0,1fr)}.public-feed-pagination{align-items:stretch;flex-direction:column}}

@@ -367,6 +367,37 @@ def emergencies(request):
     for target in Profile.objects.filter(role__in=['GOV','NGO'],approval='APPROVED').select_related('user'):
         notify(target.user,'New emergency request',f'{e.reference}: {e.category} reported at {e.location}.','/gov.html')
     return JsonResponse({'ok':True,'emergency':emergency_json(e)},status=201)
+
+
+@login_required
+@require_http_methods(['GET'])
+def public_emergency_feed(request):
+    """Read-only, system-wide feed of verified emergencies with public fields only."""
+    qs=Emergency.objects.filter(verification='Verified').exclude(status='CANCELLED').select_related('accepted_by')
+    q=request.GET.get('q','').strip()
+    district=request.GET.get('district','').strip()
+    category=request.GET.get('category','').strip()
+    status=request.GET.get('status','').strip()
+    priority=request.GET.get('priority','').strip()
+    if q: qs=qs.filter(Q(district__icontains=q)|Q(category__icontains=q)|Q(description__icontains=q)|Q(location__icontains=q)|Q(reference__icontains=q))
+    if district: qs=qs.filter(Q(district__icontains=district)|Q(location__icontains=district))
+    if category: qs=qs.filter(category=category)
+    if status: qs=qs.filter(status=status)
+    if priority: qs=qs.filter(priority=priority)
+    try:
+        limit=min(50,max(1,int(request.GET.get('limit',10))))
+        offset=max(0,int(request.GET.get('offset',0)))
+    except (TypeError,ValueError):
+        return error('Limit and offset must be whole numbers.')
+    total=qs.count()
+    rows=qs.order_by('-updated_at','-created_at')[offset:offset+limit]
+    results=[]
+    for emergency in rows:
+        summary=re.sub(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b','[contact removed]',emergency.description)
+        summary=re.sub(r'(?<!\w)(?:\+?\d[\d().\-\s]{6,}\d)(?!\w)','[contact removed]',summary)[:320]
+        results.append({'id':emergency.pk,'reference':emergency.reference,'title':f'{emergency.category} emergency','category':emergency.category,'summary':summary,'district':emergency.district or 'Punjab area','priority':emergency.priority,'severity':emergency.severity,'status':emergency.status,'status_label':emergency.get_status_display(),'updated_at':emergency.updated_at.isoformat(),'created_at':emergency.created_at.isoformat(),'organization':emergency.accepted_by.name if emergency.accepted_by_id else None})
+    return JsonResponse({'results':results,'pagination':{'total':total,'limit':limit,'offset':offset,'next_offset':offset+limit if offset+limit<total else None,'previous_offset':max(0,offset-limit) if offset else None}})
+
 @login_required
 @require_http_methods(['POST'])
 @sqlite_write_conflict('SQLite is busy accepting this emergency. Refresh and try again.')
