@@ -1,0 +1,40 @@
+/* Shared finish: keep every role workspace on the same calm, readable system. */
+:root{--navy:#14233d;--navy2:#1d3151;--blue:#2563d9;--pale:#f5f7fb;--ink:#17243b;--muted:#68758b;--line:#e3e8f0;--green:#168568;--amber:#c78319;--red:#cb4f52}
+body{background:#f5f7fb;color:#17243b}
+.sidebar{box-shadow:5px 0 24px #10203a0a}
+.sidebar nav a{min-height:42px;border-radius:8px;transition:background .16s,color .16s}
+.sidebar nav a.active{background:#2b5fc2}
+.main{padding-top:30px;padding-bottom:38px}
+.topbar{align-items:center;border-bottom-color:#e0e6ef;padding-bottom:18px}
+.topbar h1{font-size:clamp(21px,2vw,27px);letter-spacing:-.6px;line-height:1.25;margin:7px 0 0}
+.topbar .eyebrow{color:#526784}
+.welcome-row{margin:22px 0 18px}
+.welcome-row h2{font-size:19px;letter-spacing:-.25px}
+.welcome-row p,.panel-copy{line-height:1.65}
+.metric-grid{gap:15px}
+.metric{min-height:112px;padding:18px 19px;border-radius:11px;box-shadow:0 2px 7px #14233d06;transition:transform .16s,box-shadow .16s}
+.metric.clickable:hover{transform:translateY(-2px);box-shadow:0 10px 24px #14233d12}
+.metric strong{font-size:25px;letter-spacing:-.5px}
+.workspace-grid{gap:18px;align-items:start}
+.panel{border-radius:11px;padding:21px;box-shadow:0 2px 8px #14233d05}
+.panel-head{gap:12px;flex-wrap:wrap}
+.panel-head h2{font-size:16px;letter-spacing:-.2px}
+.records{font-size:12px}
+.records th{padding:12px 9px;color:#65748c;background:#f8fafd}
+.records td{padding:13px 9px;line-height:1.55}
+.badge{font-weight:650;letter-spacing:.1px}
+.small-button{border-radius:6px;padding:8px 11px;transition:background .15s,color .15s}
+.small-button:hover{background:#dce8ff;color:#204fae}
+.action-form{align-items:end;gap:11px;padding:16px;background:#f8fafd;border:1px solid #e7ecf3;border-radius:9px}
+.action-form input,.action-form select,.action-form textarea{min-height:40px;border-radius:7px;background:#fff;color:#17243b}
+.action-form textarea{min-height:74px}
+.action-form button{min-height:38px}
+.action-form label{display:grid;gap:6px;color:#5e6d83;font-size:11px;font-weight:650}
+.public-card{border-radius:11px;box-shadow:0 2px 8px #14233d05}
+.map{height:255px;border:1px solid #e1e7ee;border-radius:9px;overflow:hidden}
+.map-empty{padding:18px;text-align:center}
+.dash-footer{color:#8792a4}
+.toast{border-radius:9px}
+input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;border-color:#6d91df!important}
+@media(max-width:950px){.main{padding:22px 20px}.workspace-grid{grid-template-columns:minmax(0,1fr)}.side-panel{display:grid;grid-template-columns:1fr 1fr;column-gap:18px}.side-panel .panel-head{grid-column:1/-1}.side-panel #map{grid-column:2;grid-row:2/6;margin:0;height:100%;min-height:210px}}
+@media(max-width:640px){.main{padding:17px 13px}.topbar{gap:12px}.topbar h1{font-size:20px}.welcome-row{gap:12px;flex-wrap:wrap}.live-tag{font-size:8px}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{min-width:0;min-height:100px;padding:13px}.metric label{line-height:1.4}.metric strong{font-size:21px;overflow-wrap:anywhere}.side-panel{display:block}.side-panel #map{height:230px;margin-top:16px}.panel{padding:14px}.action-form>*{min-width:min(100%,180px)!important}.action-form label{min-width:100%}.public-nav{height:auto;min-height:64px}.public-nav nav{flex-wrap:wrap;justify-content:flex-end}}

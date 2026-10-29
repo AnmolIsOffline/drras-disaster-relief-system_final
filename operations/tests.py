@@ -93,7 +93,15 @@ class WorkflowTests(TestCase):
         self.official=User.objects.create_user('official@test.local',password='password123'); Profile.objects.create(user=self.official,role='GOV',organization=self.gov,approval='APPROVED')
         self.coordinator=User.objects.create_user('ngo@test.local',password='password123'); Profile.objects.create(user=self.coordinator,role='NGO',organization=self.ngo,approval='APPROVED')
         self.citizen=User.objects.create_user('citizen@test.local',password='password123'); Profile.objects.create(user=self.citizen,role='CITIZEN')
-    def post(self,c,path,data): return c.post(path,data=json.dumps(data),content_type='application/json')
+    def post(self,c,path,data):
+        data=dict(data)
+        if path=='/api/emergencies/' and data.get('location') and not data.get('address'):
+            data['address']=data.pop('location'); data['district']='Ludhiana'
+        if path=='/api/shelters/' and data.get('location') and not data.get('district'):
+            data['address']=data['location']; data['district']='Ludhiana'
+            if data.get('latitude') is None: data['latitude']=30.901
+            if data.get('longitude') is None: data['longitude']=75.857
+        return c.post(path,data=json.dumps(data),content_type='application/json')
     def test_production_settings_reject_missing_or_placeholder_secret_keys(self):
         for secret in ('','replace-for-deployment','short-secret'):
             env=os.environ.copy(); env['DJANGO_DEBUG']='0'; env['DJANGO_SECRET_KEY']=secret
@@ -295,7 +303,7 @@ class WorkflowTests(TestCase):
         admin_user=User.objects.create_user('inventory.admin@test.local',password='password123'); Profile.objects.create(user=admin_user,role='ADMIN',approval='APPROVED')
         admin=Client(); admin.force_login(admin_user); self.assertEqual({x['item'] for x in admin.get('/api/inventory/').json()['results']},{'Water','Food'})
     def test_shelter_occupancy_update_is_scoped_and_bounded(self):
-        s=Shelter.objects.create(name='Owned test shelter',organization=self.gov,location='Town',latitude=1,longitude=2,capacity=40,occupancy=13)
+        s=Shelter.objects.create(name='Owned test shelter',organization=self.gov,location='Town, Ludhiana, Punjab',latitude=30.901,longitude=75.857,capacity=40,occupancy=13)
         c=Client(); c.force_login(self.official)
         response=c.patch(f'/api/shelters/{s.pk}/',data=json.dumps({'occupancy':42}),content_type='application/json')
         self.assertEqual(response.status_code,400); s.refresh_from_db(); self.assertEqual(s.occupancy,13)
@@ -303,11 +311,11 @@ class WorkflowTests(TestCase):
         self.assertEqual(response.status_code,200); s.refresh_from_db(); self.assertEqual(s.available,18)
     def test_shelter_location_and_descriptive_fields_are_saved_and_validated(self):
         c=Client(); c.force_login(self.official)
-        created=self.post(c,'/api/shelters/',{'name':'North Relief Hub','location':'Ward 4, Test town','type':'Relief hub','description':'Water, first aid, and charging access.','latitude':22.57,'longitude':88.36,'capacity':80,'occupancy':12})
+        created=self.post(c,'/api/shelters/',{'name':'North Relief Hub','location':'Ward 4','type':'Relief hub','description':'Water, first aid, and charging access.','latitude':30.901,'longitude':75.857,'capacity':80,'occupancy':12})
         self.assertEqual(created.status_code,201); data=created.json()['shelter']; shelter=Shelter.objects.get(pk=data['id'])
         self.assertEqual((data['type'],data['description'],data['available']),('Relief hub','Water, first aid, and charging access.',68)); self.assertTrue(data['updated_at'])
-        updated=c.patch(f'/api/shelters/{shelter.pk}/',data=json.dumps({'name':'North Relief Hub Updated','location':'Ward 5, Test town','type':'Shelter','description':'Updated public details','latitude':23.0,'longitude':87.0,'capacity':100,'occupancy':20,'status':'Temporarily Closed'}),content_type='application/json')
-        self.assertEqual(updated.status_code,200); data=updated.json()['shelter']; self.assertEqual((data['name'],data['location'],data['type'],data['description'],data['latitude'],data['longitude'],data['available'],data['status']),('North Relief Hub Updated','Ward 5, Test town','Shelter','Updated public details',23.0,87.0,80,'Temporarily Closed'))
+        updated=c.patch(f'/api/shelters/{shelter.pk}/',data=json.dumps({'name':'North Relief Hub Updated','location':'Ward 5, Ludhiana, Punjab','type':'Shelter','description':'Updated public details','latitude':30.902,'longitude':75.858,'capacity':100,'occupancy':20,'status':'Temporarily Closed'}),content_type='application/json')
+        self.assertEqual(updated.status_code,200); data=updated.json()['shelter']; self.assertEqual((data['name'],data['location'],data['type'],data['description'],data['latitude'],data['longitude'],data['available'],data['status']),('North Relief Hub Updated','Ward 5, Ludhiana, Punjab','Shelter','Updated public details',30.902,75.858,80,'Temporarily Closed'))
         history=c.get(f'/api/shelters/{shelter.pk}/history/'); self.assertEqual(history.status_code,200); self.assertEqual([x['event_type'] for x in history.json()['results']],['UPDATED','CREATED']); self.assertEqual(history.json()['results'][0]['changes']['status']['to'],'Temporarily Closed')
         invalid=c.patch(f'/api/shelters/{shelter.pk}/',data=json.dumps({'latitude':91}),content_type='application/json'); self.assertEqual(invalid.status_code,400)
     def test_assigned_responder_can_complete_work(self):
@@ -553,7 +561,7 @@ class WorkflowTests(TestCase):
         c=Client(); c.force_login(self.citizen); self.assertEqual(self.post(c,f'/api/notifications/{n.pk}/read/',{}).status_code,200)
         n.refresh_from_db(); self.assertIsNotNone(n.read_at)
     def test_ngo_zone_application_review(self):
-        c=Client(); c.force_login(self.coordinator); response=self.post(c,'/api/zone-applications/',{'zone':'Test District','proposed_support':'Medical tents','volunteer_availability':8,'vehicle_availability':2})
+        c=Client(); c.force_login(self.coordinator); response=self.post(c,'/api/zone-applications/',{'district':'Ludhiana','proposed_support':'Medical tents','volunteer_availability':8,'vehicle_availability':2})
         self.assertEqual(response.status_code,201); app=ZoneApplication.objects.get(pk=response.json()['id'])
         self.assertEqual(list(app.history.values_list('event_type',flat=True)),['SUBMITTED'])
         c=Client(); c.force_login(self.official); response=self.post(c,f'/api/zone-applications/{app.pk}/review/',{'status':'Approved','review_note':'Approved for pilot'})
@@ -562,8 +570,9 @@ class WorkflowTests(TestCase):
         listed=c.get('/api/zone-applications/').json()['results'][0]
         self.assertEqual([event['event_type'] for event in listed['history']],['SUBMITTED','APPROVED'])
         self.assertEqual(listed['history'][-1]['detail']['review_note'],'Approved for pilot')
+        self.assertIn('Ludhiana, Punjab',app.zone)
         self.assertEqual(self.post(c,f'/api/zone-applications/{app.pk}/review/',{'status':'Rejected','review_note':'Changed decision'}).status_code,409)
-        c=Client(); c.force_login(self.coordinator); rejected=self.post(c,'/api/zone-applications/',{'zone':'South District','proposed_support':'Temporary water station'}); rejected_app=ZoneApplication.objects.get(pk=rejected.json()['id'])
+        c=Client(); c.force_login(self.coordinator); rejected=self.post(c,'/api/zone-applications/',{'district':'Amritsar','proposed_support':'Temporary water station'}); rejected_app=ZoneApplication.objects.get(pk=rejected.json()['id'])
         c=Client(); c.force_login(self.official)
         self.assertEqual(self.post(c,f'/api/zone-applications/{rejected_app.pk}/review/',{'status':'Rejected'}).status_code,400)
         self.assertEqual(self.post(c,f'/api/zone-applications/{rejected_app.pk}/review/',{'status':'Rejected','review_note':'Outside the approved response zone.'}).status_code,200)
@@ -724,10 +733,11 @@ class WorkflowTests(TestCase):
         admin=User.objects.create_user('org.admin@test.local',password='password123'); Profile.objects.create(user=admin,role='ADMIN',approval='APPROVED')
         gov=Client(); gov.force_login(self.official); self.assertEqual(self.post(gov,'/api/agencies/',{'name':'Denied Organization','kind':'NGO'}).status_code,403)
         c=Client(); c.force_login(admin)
-        created=self.post(c,'/api/agencies/',{'name':'New Relief Group','kind':'NGO','zone':'North District'}); self.assertEqual(created.status_code,201)
-        org=Organization.objects.get(name='New Relief Group'); self.assertEqual((org.kind,org.zone),('NGO','North District'))
-        self.assertEqual(c.patch(f'/api/agencies/{org.pk}/',data=json.dumps({'name':'New Relief Network','zone':'River District'}),content_type='application/json').status_code,200)
-        org.refresh_from_db(); self.assertEqual((org.name,org.zone),('New Relief Network','River District'))
+        invalid=self.post(c,'/api/agencies/',{'name':'Out of State Group','kind':'NGO','district':'Delhi'}); self.assertEqual(invalid.status_code,400)
+        created=self.post(c,'/api/agencies/',{'name':'New Relief Group','kind':'NGO','district':'Ludhiana'}); self.assertEqual(created.status_code,201)
+        org=Organization.objects.get(name='New Relief Group'); self.assertEqual((org.kind,org.zone),('NGO','Response operations, Ludhiana, Punjab'))
+        self.assertEqual(c.patch(f'/api/agencies/{org.pk}/',data=json.dumps({'name':'New Relief Network','district':'Jalandhar'}),content_type='application/json').status_code,200)
+        org.refresh_from_db(); self.assertEqual((org.name,org.zone),('New Relief Network','Response operations, Jalandhar, Punjab'))
         self.assertEqual(c.patch(f'/api/agencies/{org.pk}/',data=json.dumps({'kind':'GOV'}),content_type='application/json').status_code,409)
         self.assertEqual(self.post(c,'/api/agencies/',{'name':self.ngo.name.upper(),'kind':'NGO'}).status_code,409)
         self.assertTrue(EventLog.objects.filter(actor=admin,action='Organization created',target='New Relief Group').exists()); self.assertTrue(EventLog.objects.filter(actor=admin,action='Organization updated',target='New Relief Network').exists())
@@ -794,30 +804,62 @@ class WorkflowTests(TestCase):
     def test_profile_settings_reject_wrong_current_password_without_partial_update(self):
         c=Client(); c.force_login(self.citizen); response=self.post(c,'/api/settings/',{'name':'Changed Name','current_password':'wrong','new_password':'goodpassword','confirm_password':'goodpassword'})
         self.assertEqual(response.status_code,403); self.citizen.refresh_from_db(); self.assertEqual(self.citizen.first_name,'')
-    def test_repeatable_demo_seed(self):
+    def test_repeatable_demo_seed_and_normalization_preserve_accounts_and_relationships(self):
         from django.core.management import call_command
-        call_command('seed_demo'); n=Emergency.objects.filter(reference__startswith='DR-DEMO-').count(); zones=ZoneApplication.objects.count(); pb_emergencies=Emergency.objects.filter(reference__startswith='PB-DEMO-').count(); citizens=User.objects.filter(username__startswith='punjab.citizen').count(); donations=Donation.objects.filter(reference__startswith='DON-DEMO-').count(); history=EmergencyEvent.objects.count(); seeded_workflows={'authorizations':AllocationAuthorization.objects.count(),'authorization_events':AllocationAuthorizationEvent.objects.count(),'event_logs':EventLog.objects.count(),'inventory_movements':InventoryMovement.objects.count(),'notifications':Notification.objects.count(),'shelter_events':ShelterEvent.objects.count(),'system_preferences':SystemPreference.objects.count(),'zone_events':ZoneApplicationEvent.objects.count()}
-        proposal=AllocationAuthorization.objects.get(task_instructions='DEMO-SEED: Konkan food parcels allocation proposal')
-        self.assertEqual(proposal.status,'PENDING'); self.assertEqual(proposal.requested_quantity,25); self.assertTrue(proposal.history.filter(event_type='SUBMITTED').exists())
-        self.assertTrue(InventoryMovement.objects.filter(note='DEMO-SEED: Food parcels opening receipt').exists()); self.assertTrue(InventoryMovement.objects.filter(note='DEMO-SEED: Food parcels sample issue').exists())
-        self.assertTrue(Notification.objects.filter(user__username='official@drras.demo',title='DEMO: Allocation review queue').exists())
         call_command('seed_demo')
-        seeded_volunteer=Profile.objects.get(user__username='volunteer@drras.demo'); seeded_driver=Profile.objects.get(user__username='driver@drras.demo')
-        self.assertTrue(seeded_volunteer.details['skills']); self.assertTrue(seeded_volunteer.details['service']); self.assertTrue(seeded_driver.details['license_number']); self.assertTrue(seeded_driver.details['license_class'])
-        volunteer_client=Client(); volunteer_client.force_login(seeded_volunteer.user); volunteer_profile=volunteer_client.get('/api/settings/').json()
-        self.assertEqual(volunteer_profile['organization'],seeded_volunteer.organization.name); self.assertEqual(volunteer_profile['details']['skills'],seeded_volunteer.details['skills'])
-        self.assertEqual(Emergency.objects.filter(reference__startswith='DR-DEMO-').count(),n); self.assertEqual(ZoneApplication.objects.count(),zones)
-        self.assertEqual(Emergency.objects.filter(reference__startswith='PB-DEMO-').count(),pb_emergencies); self.assertEqual(pb_emergencies,25)
-        self.assertEqual(User.objects.filter(username__startswith='punjab.citizen').count(),citizens); self.assertEqual(citizens,40)
-        self.assertEqual(Donation.objects.filter(reference__startswith='DON-DEMO-').count(),donations)
-        self.assertEqual(EmergencyEvent.objects.count(),history); self.assertEqual(EmergencyEvent.objects.filter(emergency__reference__startswith='PB-DEMO-',event_type='DEMO_SEEDED').count(),25)
-        self.assertEqual({'authorizations':AllocationAuthorization.objects.count(),'authorization_events':AllocationAuthorizationEvent.objects.count(),'event_logs':EventLog.objects.count(),'inventory_movements':InventoryMovement.objects.count(),'notifications':Notification.objects.count(),'shelter_events':ShelterEvent.objects.count(),'system_preferences':SystemPreference.objects.count(),'zone_events':ZoneApplicationEvent.objects.count()},seeded_workflows)
-        for emergency in Emergency.objects.filter(reference__startswith='PB-DEMO-').select_related('accepted_by'):
-            for assignment in emergency.assignments.exclude(status='CANCELLED').select_related('user','user__profile'):
-                self.assertEqual(assignment.user.profile.organization_id,emergency.accepted_by_id)
-            if emergency.needs_transport:
-                self.assertTrue(emergency.assignments.filter(kind='VOL').exists()); self.assertTrue(emergency.assignments.filter(kind='DRIVER').exists())
-                dispatch=Dispatch.objects.get(emergency=emergency); self.assertGreaterEqual(dispatch.vehicle.capacity,emergency.required_vehicle_capacity)
-        for dispatch in Dispatch.objects.filter(emergency__reference__startswith='DR-DEMO-').select_related('emergency'):
-            assignment=Assignment.objects.get(emergency=dispatch.emergency,user=dispatch.driver,kind='DRIVER')
-            self.assertEqual(assignment.status,{'ASSIGNED':'ASSIGNED','ACCEPTED':'ACKNOWLEDGED','IN_TRANSIT':'IN_PROGRESS','DELIVERED':'COMPLETED','EXCEPTION':'BLOCKED','CANCELLED':'CANCELLED'}[dispatch.status])
+        seeded = Profile.objects.filter(details__seed_key__isnull=False).select_related('user')
+        self.assertEqual(seeded.count(), 73)
+        self.assertEqual(User.objects.filter(profile__details__seed_key__isnull=False).values('first_name','last_name').distinct().count(), 73)
+        self.assertEqual(User.objects.filter(profile__details__seed_key__isnull=False).values('email').distinct().count(), 73)
+        self.assertFalse(User.objects.filter(profile__details__seed_key__isnull=False, email__icontains='@drras.demo').exists())
+        self.assertEqual(Profile.objects.filter(role='CITIZEN',details__seed_key__isnull=False).count(), 41)
+        self.assertEqual(Profile.objects.filter(role='GOV',approval='PENDING',details__seed_key__isnull=False).count(), 1)
+        self.assertEqual(Profile.objects.filter(role='NGO',approval='PENDING',details__seed_key__isnull=False).count(), 1)
+        for role in dict(Profile.ROLES):
+            account = seeded.filter(role=role).first()
+            if account:
+                self.assertTrue(account.user.check_password('PunjabRelief2026!'))
+                login_client = Client()
+                response = self.post(login_client, '/api/login/', {'email':account.user.email,'password':'PunjabRelief2026!'})
+                self.assertEqual(response.status_code, 200, role)
+        self.assertFalse(Emergency.objects.filter(demo=True).exclude(location__icontains='Punjab').exists())
+        self.assertFalse(Shelter.objects.filter(demo=True).exclude(location__icontains='Punjab').exists())
+        self.assertFalse(Advisory.objects.filter(demo=True).exclude(location__icontains='Punjab').exists())
+        self.assertFalse(Organization.objects.filter(demo=True).exclude(zone__icontains='Punjab').exclude(zone__icontains='Ludhiana').exclude(zone__icontains='Amritsar').exclude(zone__icontains='Bathinda').exclude(zone__icontains='Pathankot').exists())
+        emergency = Emergency.objects.filter(demo=True).first()
+        assignment_ids = list(emergency.assignments.values_list('id',flat=True))
+        dispatch_ids = list(emergency.dispatches.values_list('id',flat=True))
+        counts = (User.objects.filter(profile__details__seed_key__isnull=False).count(), Emergency.objects.count(), Assignment.objects.count(), Dispatch.objects.count(), Shelter.objects.count(), Donation.objects.count())
+        call_command('normalize_punjab_data')
+        call_command('normalize_punjab_data')
+        call_command('seed_demo')
+        self.assertEqual(counts,(User.objects.filter(profile__details__seed_key__isnull=False).count(), Emergency.objects.count(), Assignment.objects.count(), Dispatch.objects.count(), Shelter.objects.count(), Donation.objects.count()))
+        emergency.refresh_from_db()
+        self.assertEqual(assignment_ids,list(emergency.assignments.values_list('id',flat=True)))
+        self.assertEqual(dispatch_ids,list(emergency.dispatches.values_list('id',flat=True)))
+        self.assertEqual(emergency.location.split(',')[-1].strip(),'Punjab')
+
+    def test_location_forms_enforce_punjab_and_map_coordinates(self):
+        citizen = Client(); citizen.force_login(self.citizen)
+        outside = self.post(citizen,'/api/emergencies/',{'category':'Flood','description':'Water needs review','address':'Old town','district':'Pune'})
+        self.assertEqual(outside.status_code,400)
+        created = self.post(citizen,'/api/emergencies/',{'category':'Flood','description':'Water needs review','address':'Civil Lines','district':'Ludhiana'})
+        self.assertEqual(created.status_code,201)
+        self.assertEqual(Emergency.objects.get(pk=created.json()['emergency']['id']).location,'Civil Lines, Ludhiana, Punjab')
+
+        official = Client(); official.force_login(self.official)
+        outside_shelter = self.post(official,'/api/shelters/',{'name':'Outside Shelter','location':'Market Road','district':'Ludhiana','latitude':22.57,'longitude':88.36,'capacity':20})
+        self.assertEqual(outside_shelter.status_code,400)
+        shelter = self.post(official,'/api/shelters/',{'name':'Civil Lines Shelter','location':'Civil Lines','district':'Ludhiana','latitude':30.901,'longitude':75.857,'capacity':20})
+        self.assertEqual(shelter.status_code,201)
+        row = Shelter.objects.get(pk=shelter.json()['shelter']['id'])
+        self.assertEqual(row.location,'Civil Lines, Ludhiana, Punjab')
+
+    def test_profile_api_does_not_expose_seed_metadata(self):
+        from django.core.management import call_command
+        call_command('seed_demo')
+        profile = Profile.objects.filter(details__seed_key__isnull=False,role='GOV_VOL').first()
+        c = Client(); c.force_login(profile.user)
+        details = c.get('/api/settings/').json()['details']
+        self.assertNotIn('seed_key',details)
+        self.assertNotIn('demo',details)

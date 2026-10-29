@@ -13,11 +13,14 @@ from django.utils.dateparse import parse_datetime
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 from .api_common import error, profile, payload, notify, sqlite_write_conflict
+from .geography import PUNJAB_DISTRICTS, format_punjab_address, is_punjab_coordinate
 from .models import Profile, Organization, Emergency, EmergencyEvent, Assignment, AssignmentEvent, AllocationAuthorization, AllocationAuthorizationEvent, Shelter, ShelterEvent, Donation, Advisory, AdvisoryEvent, Inventory, InventoryMovement, EventLog, SupportTicket, SupportReply, Notification, ZoneApplication, ZoneApplicationEvent, Vehicle, Dispatch, DispatchEvent, DeliveryRecord, FundTransaction, SystemPreference, SafetyTraining, TrainingCompletion
 User=get_user_model()
 ROLE_PAGE={'ADMIN':'admin.html','GOV':'gov.html','NGO':'ngo.html','GOV_VOL':'gov_volunteer.html','NGO_VOL':'ngo_volunteer.html','GOV_DRIVER':'govt_driver.html','NGO_DRIVER':'ngo_driver.html','CITIZEN':'citizen.html'}
 def record_emergency_event(emergency,actor,event_type,from_status='',to_status='',note=''):
     return EmergencyEvent.objects.create(emergency=emergency,actor=actor,event_type=event_type,from_status=from_status,to_status=to_status,note=note)
+def public_profile_details(details):
+    return {key:value for key,value in (details or {}).items() if key not in ('seed_key','demo')}
 def page(request,page='index'):
     allowed={'index','login','register','admin','gov','ngo','gov_volunteer','ngo_volunteer','govt_driver','ngo_driver','citizen'}
     if page not in allowed: page='index'
@@ -184,7 +187,7 @@ def update_user_role(request,pk):
 def settings_view(request):
     p=profile(request)
     if not p: return error('Account profile is missing.',403)
-    if request.method=='GET': return JsonResponse({'name':request.user.get_full_name(),'email':request.user.email,'phone':p.phone,'role':p.get_role_display(),'approval':p.approval,'organization':p.organization.name if p.organization else None,'details':p.details})
+    if request.method=='GET': return JsonResponse({'name':request.user.get_full_name(),'email':request.user.email,'phone':p.phone,'role':p.get_role_display(),'approval':p.approval,'organization':p.organization.name if p.organization else None,'details':public_profile_details(p.details)})
     locked_user=User.objects.get(pk=request.user.pk)
     p=Profile.objects.filter(user=locked_user).first()
     if not p: return error('Account profile is missing.',403)
@@ -291,8 +294,13 @@ def emergencies(request):
     d=payload(request)
     can_report=bool(p and (p.role=='CITIZEN' or (p.role=='GOV' and p.approval=='APPROVED')))
     if not can_report: return error('Citizen or approved Government Official access is required to submit a request.',403)
-    required=['category','description','location']
-    if any(not d.get(k) for k in required): return error('Category, description and location are required.')
+    required=['category','description','address','district']
+    if any(not d.get(k) for k in required): return error('Category, description, locality and Punjab district are required.')
+    try: location=format_punjab_address(d['address'],d['district'])
+    except ValueError as exc: return error(str(exc))
+    if d.get('latitude') not in (None,'') or d.get('longitude') not in (None,''):
+        if not is_punjab_coordinate(d.get('latitude'),d.get('longitude')):
+            return error('Emergency coordinates must fall within Punjab.')
     import uuid
     default_priority=SystemPreference.objects.filter(key='default_emergency_priority').values_list('value',flat=True).first() or 'MEDIUM'
     priority=d.get('priority') or default_priority
@@ -302,7 +310,7 @@ def emergencies(request):
     except (ValueError,TypeError): return error('Affected population and vehicle capacity must be whole numbers.')
     raw_skills=d.get('required_skills',''); required_skills=', '.join(dict.fromkeys(s.strip() for s in raw_skills.split(',') if s.strip())) if isinstance(raw_skills,str) else ''
     needs_transport=d.get('needs_transport') in (True,'true','True','on','1',1)
-    e=Emergency.objects.create(reference='DR-'+uuid.uuid4().hex[:8].upper(),reporter=request.user,category=d['category'],priority=priority,description=d['description'],location=d['location'],affected=affected,latitude=d.get('latitude'),longitude=d.get('longitude'),required_skills=required_skills,needs_transport=needs_transport,required_vehicle_capacity=required_vehicle_capacity)
+    e=Emergency.objects.create(reference='PB-'+uuid.uuid4().hex[:8].upper(),reporter=request.user,category=d['category'],priority=priority,description=d['description'],location=location,affected=affected,latitude=d.get('latitude'),longitude=d.get('longitude'),required_skills=required_skills,needs_transport=needs_transport,required_vehicle_capacity=required_vehicle_capacity)
     record_emergency_event(e,request.user,'SUBMITTED','',e.status,'Emergency request submitted')
     EventLog.objects.create(actor=request.user,action='Emergency submitted',target=e.reference)
     for target in Profile.objects.filter(role__in=['GOV','NGO'],approval='APPROVED').select_related('user'):
@@ -839,10 +847,11 @@ def shelters(request):
     try:
         capacity=int(d['capacity']); occupancy=int(d.get('occupancy',0)); latitude=float(d['latitude']); longitude=float(d['longitude'])
         if capacity<1 or occupancy<0 or occupancy>capacity: return error('Shelter occupancy must be between zero and capacity.')
-        if not -90<=latitude<=90 or not -180<=longitude<=180: return error('Latitude or longitude is outside the valid range.')
+        if not is_punjab_coordinate(latitude,longitude): return error('Shelter coordinates must fall within Punjab.')
+        location=format_punjab_address(d.get('address') or d.get('location'),d.get('district'))
         shelter_status=d.get('status','Open')
         if shelter_status not in ('Open','Full','Temporarily Closed'): return error('Choose a valid shelter status.')
-        s=Shelter.objects.create(name=str(d['name']).strip(),organization=p.organization,location=str(d['location']).strip(),shelter_type=str(d.get('type',d.get('shelter_type','Shelter'))).strip()[:40] or 'Shelter',description=str(d.get('description','')).strip(),latitude=latitude,longitude=longitude,capacity=capacity,occupancy=occupancy,status=shelter_status)
+        s=Shelter.objects.create(name=str(d['name']).strip(),organization=p.organization,location=location,shelter_type=str(d.get('type',d.get('shelter_type','Shelter'))).strip()[:40] or 'Shelter',description=str(d.get('description','')).strip(),latitude=latitude,longitude=longitude,capacity=capacity,occupancy=occupancy,status=shelter_status)
         ShelterEvent.objects.create(shelter=s,actor=request.user,event_type='CREATED',changes={'status':s.status,'capacity':capacity,'occupancy':occupancy,'location':s.location})
         EventLog.objects.create(actor=request.user,action='Shelter registered',target=s.name,detail={'organization':p.organization.name,'latitude':latitude,'longitude':longitude})
     except (KeyError,ValueError,TypeError): return error('Provide shelter name, location, coordinates and capacity.')
@@ -874,10 +883,13 @@ def update_shelter(request,pk):
     if not p or p.role not in ('ADMIN','GOV','NGO') or (p.role!='ADMIN' and s.organization_id!=p.organization_id): return error('You cannot update this shelter.',403)
     original={field:getattr(s,field) for field in ('name','location','shelter_type','description','latitude','longitude','capacity','occupancy','status')}
     d=payload(request)
+    if 'district' in d or 'address' in d:
+        try: d['location']=format_punjab_address(d.get('address') or d.get('location'),d.get('district'))
+        except ValueError as exc: return error(str(exc))
     try: capacity=int(d.get('capacity',s.capacity)); occupancy=int(d.get('occupancy',s.occupancy)); latitude=float(d.get('latitude',s.latitude)); longitude=float(d.get('longitude',s.longitude))
     except (ValueError,TypeError): return error('Capacity, occupancy, latitude and longitude must be numeric.')
     if capacity<1 or occupancy<0 or occupancy>capacity: return error('Shelter occupancy must be between zero and capacity.')
-    if not -90<=latitude<=90 or not -180<=longitude<=180: return error('Latitude or longitude is outside the valid range.')
+    if not is_punjab_coordinate(latitude,longitude): return error('Shelter coordinates must fall within Punjab.')
     s.capacity=capacity; s.occupancy=occupancy; s.latitude=latitude; s.longitude=longitude
     for key,field,max_length in [('name','name',140),('location','location',180),('type','shelter_type',40)]:
         value=d.get(key)
@@ -981,6 +993,9 @@ def agencies(request):
     if request.method=='POST':
         if not p or p.role!='ADMIN' or p.approval!='APPROVED': return error('Approved Administrator access required.',403)
         d=payload(request); name=str(d.get('name','')).strip(); kind=d.get('kind'); zone=str(d.get('zone','')).strip()
+        if 'district' in d:
+            try: zone=format_punjab_address('Response operations',d.get('district'))
+            except ValueError as exc: return error(str(exc))
         if not 2<=len(name)<=140: return error('Organization name must be between 2 and 140 characters.')
         if kind not in ('GOV','NGO'): return error('Choose Government or NGO as the organization type.')
         if Organization.objects.filter(name__iexact=name).exists(): return error('An organization with this name already exists.',409)
@@ -1008,6 +1023,9 @@ def update_agency(request,pk):
     d=payload(request)
     if 'kind' in d and d['kind']!=org.kind: return error('Organization type cannot change after creation; create a separate organization instead.',409)
     name=str(d.get('name',org.name)).strip(); zone=str(d.get('zone',org.zone)).strip()
+    if 'district' in d:
+        try: zone=format_punjab_address('Response operations',d.get('district'))
+        except ValueError as exc: return error(str(exc))
     if not 2<=len(name)<=140: return error('Organization name must be between 2 and 140 characters.')
     if Organization.objects.filter(name__iexact=name).exclude(pk=org.pk).exists(): return error('An organization with this name already exists.',409)
     previous={'name':org.name,'zone':org.zone}
@@ -1024,10 +1042,17 @@ def zone_applications(request):
     if request.method=='POST':
         d=payload(request)
         if not p or p.role!='NGO' or p.approval!='APPROVED' or not p.organization: return error('Approved NGO Coordinator access required.',403)
-        if not d.get('zone') or not d.get('proposed_support'): return error('Zone and proposed support are required.')
+        if not d.get('proposed_support'): return error('Proposed support is required.')
+        if 'district' in d:
+            try: zone=format_punjab_address('Relief response zone',d.get('district'))
+            except ValueError as exc: return error(str(exc))
+        else:
+            # Keep compatibility for existing API clients while restricting new zone names.
+            zone=str(d.get('zone','')).strip()
+            if not any(district.lower() in zone.lower() for district in PUNJAB_DISTRICTS) or 'punjab' not in zone.lower(): return error('Choose a Punjab district for the response zone.')
         try: v=max(0,int(d.get('volunteer_availability',0))); cars=max(0,int(d.get('vehicle_availability',0)))
         except (ValueError,TypeError): return error('Volunteer and vehicle availability must be whole numbers.')
-        a=ZoneApplication.objects.create(organization=p.organization,zone=d['zone'],proposed_support=d['proposed_support'],volunteer_availability=v,vehicle_availability=cars)
+        a=ZoneApplication.objects.create(organization=p.organization,zone=zone,proposed_support=d['proposed_support'],volunteer_availability=v,vehicle_availability=cars)
         ZoneApplicationEvent.objects.create(application=a,actor=request.user,event_type='SUBMITTED',detail={'zone':a.zone,'proposed_support':a.proposed_support,'volunteer_availability':v,'vehicle_availability':cars})
         EventLog.objects.create(actor=request.user,action='NGO zone application submitted',target=a.organization.name,detail={'zone':a.zone})
         return JsonResponse({'ok':True,'id':a.id},status=201)
@@ -1116,7 +1141,7 @@ def inventory(request):
 def approvals(request):
     p=profile(request)
     if not p or p.role!='ADMIN': return error('Administrator access required.',403)
-    return JsonResponse({'results':[{'id':x.id,'name':x.user.get_full_name(),'email':x.user.email,'phone':x.phone,'role':x.get_role_display(),'role_code':x.role,'organization':x.organization.name if x.organization else None,'details':x.details,'created_at':x.user.date_joined.isoformat(),'approval_decided_at':x.approval_decided_at.isoformat() if x.approval_decided_at else None,'decided_by':x.approval_decided_by.get_full_name() if x.approval_decided_by else None,'rejection_reason':x.rejection_reason} for x in Profile.objects.filter(approval='PENDING',role__in=['GOV','NGO']).select_related('user','organization','approval_decided_by')]})
+    return JsonResponse({'results':[{'id':x.id,'name':x.user.get_full_name(),'email':x.user.email,'phone':x.phone,'role':x.get_role_display(),'role_code':x.role,'organization':x.organization.name if x.organization else None,'details':public_profile_details(x.details),'created_at':x.user.date_joined.isoformat(),'approval_decided_at':x.approval_decided_at.isoformat() if x.approval_decided_at else None,'decided_by':x.approval_decided_by.get_full_name() if x.approval_decided_by else None,'rejection_reason':x.rejection_reason} for x in Profile.objects.filter(approval='PENDING',role__in=['GOV','NGO']).select_related('user','organization','approval_decided_by')]})
 @login_required
 @require_http_methods(['POST'])
 def approve(request,pk):

@@ -1,9 +1,15 @@
 from django.core.management.base import BaseCommand
+from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from operations.models import Organization, Profile, Emergency, EmergencyEvent, Shelter, Inventory, Donation, DonationCampaign, Advisory, SupportTicket, SupportReply, Assignment, ZoneApplication, Vehicle, Dispatch, DispatchEvent, FundTransaction, SafetyTraining, TrainingCompletion, AssignmentEvent, AdvisoryEvent, AllocationAuthorization, AllocationAuthorizationEvent, EventLog, InventoryMovement, Notification, ShelterEvent, SystemPreference, ZoneApplicationEvent
 from django.utils import timezone
 User=get_user_model()
+LOCAL_TEST_PASSWORD='PunjabRelief2026!'
+
+def ensure_local_test_password(user):
+    if not user.check_password(LOCAL_TEST_PASSWORD):
+        user.set_password(LOCAL_TEST_PASSWORD)
 
 VOLUNTEER_SERVICES=['Emergency Medical Response','Community First Aid','Relief Logistics','Search and Rescue']
 VOLUNTEER_SKILLS=['First aid, CPR','First aid, Basic life support','Relief logistics, Warehouse handling','Search and rescue, Radio communications']
@@ -22,19 +28,23 @@ class Command(BaseCommand):
     help='Create or update repeatable DRRAS demonstration records.'
     @transaction.atomic
     def handle(self,*args,**opts):
+        if Profile.objects.filter(details__seed_key__isnull=False).exists():
+            call_command('normalize_punjab_data')
+            self.stdout.write(self.style.SUCCESS('Existing seeded records are already normalized; no accounts or operational records were recreated.'))
+            return
         gov,_=Organization.objects.get_or_create(name='Maharashtra State Response Cell',defaults={'kind':'GOV','zone':'Maharashtra','demo':True})
         ngo1,_=Organization.objects.get_or_create(name='Sahyog Relief Network',defaults={'kind':'NGO','zone':'Konkan','demo':True})
         ngo2,_=Organization.objects.get_or_create(name='Seva Aid Collective',defaults={'kind':'NGO','zone':'Pune Division','demo':True})
         accounts=[('admin@drras.demo','Aarav Kulkarni','ADMIN',None,'APPROVED'),('official@drras.demo','Meera Deshmukh','GOV',gov,'APPROVED'),('sahyog@drras.demo','Kabir Shah','NGO',ngo1,'APPROVED'),('seva@drras.demo','Ananya Rao','NGO',ngo2,'APPROVED'),('volunteer@drras.demo','Ishita Patil','GOV_VOL',gov,'APPROVED'),('volunteer2@drras.demo','Manav Pawar','GOV_VOL',gov,'APPROVED'),('volunteer3@drras.demo','Aditi Shinde','GOV_VOL',gov,'APPROVED'),('ngo.volunteer@drras.demo','Rohan More','NGO_VOL',ngo1,'APPROVED'),('ngo.volunteer2@drras.demo','Farah Shaikh','NGO_VOL',ngo1,'APPROVED'),('ngo.volunteer3@drras.demo','Neelam Sawant','NGO_VOL',ngo1,'APPROVED'),('driver@drras.demo','Vikram Jadhav','GOV_DRIVER',gov,'APPROVED'),('driver2@drras.demo','Sonal Kapse','GOV_DRIVER',gov,'APPROVED'),('ngo.driver@drras.demo','Nisha Pawar','NGO_DRIVER',ngo1,'APPROVED'),('ngo.driver2@drras.demo','Arjun Desai','NGO_DRIVER',ngo1,'APPROVED'),('citizen@drras.demo','Priya Joshi','CITIZEN',None,'APPROVED')]
         users={}; volunteer_index=0; driver_index=0
         for email,name,role,org,status in accounts:
-            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; u.set_password('ReliefDemo2026!'); u.save()
+            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; ensure_local_test_password(u); u.save()
             details=demo_responder_details(role,volunteer_index if role in ('GOV_VOL','NGO_VOL') else driver_index) if role in ('GOV_VOL','NGO_VOL','GOV_DRIVER','NGO_DRIVER') else {'demo':True}
             if role in ('GOV_VOL','NGO_VOL'): volunteer_index+=1
             if role in ('GOV_DRIVER','NGO_DRIVER'): driver_index+=1
             Profile.objects.update_or_create(user=u,defaults={'role':role,'organization':org,'approval':status,'details':details}); users[email]=u
         for email,name,role,org in [('gov.applicant@drras.demo','Sana Khan','GOV',gov),('ngo.applicant@drras.demo','Devendra Nair','NGO',ngo2)]:
-            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; u.set_password('ReliefDemo2026!'); u.save(); Profile.objects.update_or_create(user=u,defaults={'role':role,'organization':org,'approval':'PENDING','details':{'demo':True}})
+            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; ensure_local_test_password(u); u.save(); Profile.objects.update_or_create(user=u,defaults={'role':role,'organization':org,'approval':'PENDING','details':{'demo':True}})
         # A larger, clearly fictional Punjab dataset gives the dashboards enough
         # interconnected records to demonstrate queue, assignment, and map flows.
         punjab_gov,_=Organization.objects.get_or_create(name='Punjab State Response Cell',defaults={'kind':'GOV','zone':'Punjab','demo':True})
@@ -61,7 +71,7 @@ class Command(BaseCommand):
         ]
         punjab_volunteer_index=0; punjab_driver_index=0
         for email,name,role,org in responders:
-            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; u.set_password('ReliefDemo2026!'); u.save()
+            u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':name}); u.email=email; u.first_name=name; ensure_local_test_password(u); u.save()
             details=demo_responder_details(role,punjab_volunteer_index,'PB') if role in ('GOV_VOL','NGO_VOL') else demo_responder_details(role,punjab_driver_index,'PB') if role in ('GOV_DRIVER','NGO_DRIVER') else {'demo':True}
             if role in ('GOV_VOL','NGO_VOL'): punjab_volunteer_index+=1
             if role in ('GOV_DRIVER','NGO_DRIVER'): punjab_driver_index+=1
@@ -71,7 +81,7 @@ class Command(BaseCommand):
         for i,name in enumerate(citizen_names,1):
             email=f'punjab.citizen{i:02d}@drras.demo'; first,*last=name.split()
             u,_=User.objects.get_or_create(username=email,defaults={'email':email,'first_name':first,'last_name':' '.join(last)})
-            u.email=email; u.first_name=first; u.last_name=' '.join(last); u.set_password('ReliefDemo2026!'); u.save()
+            u.email=email; u.first_name=first; u.last_name=' '.join(last); ensure_local_test_password(u); u.save()
             Profile.objects.update_or_create(user=u,defaults={'role':'CITIZEN','organization':None,'approval':'APPROVED','details':{'demo':True}}); punjab_citizens.append(u)
         punjab_places=[('Ludhiana',30.901,75.857),('Jagraon',30.787,75.473),('Khanna',30.705,76.221),('Samrala',30.836,76.193),('Moga',30.816,75.172),('Patiala',30.340,76.386),('Ferozepur',30.933,74.622),('Jalandhar',31.326,75.576),('Amritsar',31.634,74.873),('Sangrur',30.245,75.842)]
         cats=['Flood','Medical','Fire','Other','Flood']; priorities=['HIGH','MEDIUM','CRITICAL','LOW','HIGH']; punjab_emergencies=[]
@@ -223,4 +233,5 @@ class Command(BaseCommand):
 
         for action,target,actor,detail in [('Demo request accepted','DR-DEMO-103',users['sahyog@drras.demo'],{'organization':'Sahyog Relief Network'}),('Demo response underway','DR-DEMO-104',users['official@drras.demo'],{'organization':'Maharashtra State Response Cell'}),('Demo relief request resolved','DR-DEMO-105',users['seva@drras.demo'],{'organization':'Seva Aid Collective'}),('Demo stock ledger initialized','Pune Central Warehouse/Water kits',users['official@drras.demo'],{'opening_balance':400,'receipt':120,'issue':40}),('Demo shelter snapshot recorded','Ratnagiri Community Hall',users['official@drras.demo'],{'occupancy':shelter.occupancy,'capacity':shelter.capacity})]:
             EventLog.objects.get_or_create(action=action,target=target,defaults={'actor':actor,'detail':{'demo':True,**detail}})
-        self.stdout.write(self.style.SUCCESS('Demo records ready. Demo password for all accounts: ReliefDemo2026!'))
+        call_command('normalize_punjab_data')
+        self.stdout.write(self.style.SUCCESS('Punjab relief records are ready. Local account password: PunjabRelief2026!'))
