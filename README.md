@@ -17,7 +17,7 @@ python manage.py runserver
 
 Open http://127.0.0.1:8000/. The seed command creates or updates clearly marked fictional demo records and can be rerun. Migrations update the existing database; there is no reset or reseed command that deletes its data. To inspect the app without seeded accounts, run migrations and create an administrator with `python manage.py createsuperuser`.
 
-The checked-in `.env.example` documents optional local settings. Django uses SQLite at `db.sqlite3`; no external database service or database URL is used.
+The checked-in `db.sqlite3` is a fictional demo snapshot; its temporary login sessions are cleared before publishing. Do not put real personal or operational data in this database or commit a locally populated replacement. The checked-in `.env.example` documents optional local settings. Django uses SQLite at `db.sqlite3`; no external database service or database URL is used.
 
 ## Demo accounts
 
