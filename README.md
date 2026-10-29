@@ -33,6 +33,12 @@ SQLite allows only one writer at a time and does not provide row-level `SELECT F
 
 Donations remain in demonstration mode; no payment provider is connected. Live GPS tracking is not included. Map tiles and fonts currently load from public CDNs, so those assets require internet access.
 
+## Render deployment preparation
+
+The repository includes `build.sh` for Render's build command. Configure the web service to run `bash build.sh` and start it with `python -m gunicorn drras.wsgi:application --bind 0.0.0.0:$PORT`. The project uses WhiteNoise for collected static files. Set `DJANGO_DEBUG=0`, a unique `DJANGO_SECRET_KEY` of at least 50 characters, `ALLOWED_HOSTS` to the Render hostname, and `TRUST_X_FORWARDED_PROTO=1` in the service environment. Keep `DEMO_PAYMENT_MODE=1` for the demonstration deployment.
+
+The app still uses SQLite at `db.sqlite3` and stores uploaded delivery photos under `media/`. Render's free service has ephemeral storage, so its SQLite data and photos can disappear after restart, redeploy, or spin-down. Persistent use requires a persistent disk and changing the configured database and media paths to that disk, or moving to durable managed storage. Do not treat the free service as a durable deployment for this data.
+
 ## Verification
 
 Run the operations test suite with:
