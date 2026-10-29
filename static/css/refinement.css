@@ -41,8 +41,41 @@ input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;bo
 .citizen-workspace[data-section]:not([data-section="Overview"]) .welcome-row,
 .citizen-workspace[data-section]:not([data-section="Overview"]) #overview,
 .citizen-workspace[data-section]:not([data-section="Overview"]) .side-panel{display:none!important}
+.citizen-workspace .main{width:min(100%,1680px);margin-inline:auto;min-width:0}
+.citizen-workspace[data-section]:not([data-section="Overview"]) .workspace-grid{grid-template-columns:minmax(0,1fr)}
+.citizen-workspace[data-section]:not([data-section="Overview"]) .large-panel{width:100%;max-width:none}
+.citizen-workspace #section-content{width:100%;min-width:0}
 .citizen-workspace[data-section="Overview"] .side-panel{display:block}
-.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr) 320px}
+.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr) minmax(270px,320px)}
+.citizen-overview-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:start}
+.citizen-overview-grid>.public-card{min-width:0;margin:0}
+.citizen-profile-card{grid-column:1/-1;padding:17px 20px;display:flex;justify-content:space-between;align-items:center;gap:22px}
+.citizen-profile-card h3{margin:4px 0;font-size:18px}
+.citizen-profile-card p{margin:5px 0;color:var(--muted);line-height:1.6}
+.citizen-profile-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.citizen-profile-form{margin-top:13px;grid-template-columns:repeat(2,minmax(0,1fr));align-items:end}
+.citizen-profile-form[hidden]{display:none}
+.overview-requests{grid-column:span 7}
+.overview-contributions{grid-column:span 5}
+.overview-deliveries{grid-column:span 7}
+.overview-advisories{grid-column:span 7}
+.overview-notifications{grid-column:span 5}
+.citizen-overview-grid h3{margin:2px 0 12px}
+.citizen-overview-grid .table-wrap{max-width:100%;overflow-x:auto}
+.overview-delivery-list,.overview-advisory-list,.overview-notification-list{display:grid;gap:10px}
+.overview-delivery-list .public-card,.overview-advisory-list .public-card,.overview-notification-list .public-card{padding:14px}
+.citizen-emergency-form{width:100%;}
+.citizen-emergency-form .location-picker{min-width:0}
+.emergency-map{height:clamp(320px,38vw,480px)}
+#emergency-coordinates[data-error="true"]{color:var(--amber);font-weight:600}
+.citizen-workspace[data-section="Overview"] #section-content{max-width:none}
+.citizen-workspace[data-section="Overview"] .large-panel{padding:20px}
+.citizen-workspace .records{min-width:680px}
+.citizen-workspace .table-wrap{max-width:100%;overflow-x:auto}
+.contribution-note{margin:0 0 18px}
+.contribution-summary{margin:12px 0 24px}
+.contribution-history details{min-width:150px}
+.contribution-history details p{white-space:normal;min-width:210px}
 .citizen-emergency-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
 .citizen-emergency-form>label{display:grid;gap:7px}
 .citizen-emergency-form .full-field,.citizen-emergency-form fieldset{grid-column:1/-1}
@@ -50,4 +83,5 @@ input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;bo
 .citizen-emergency-form .vulnerable-counts legend{padding:0 7px;color:var(--muted);font-size:12px;font-weight:650}
 .citizen-emergency-form .vulnerable-counts label{display:grid;gap:6px}
 .emergency-map{height:300px;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:12px}
-@media(max-width:760px){.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr)}.citizen-emergency-form{grid-template-columns:1fr}.citizen-emergency-form .vulnerable-counts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:950px){.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr)}.citizen-workspace .main{width:100%}.citizen-overview-grid>.public-card{grid-column:1/-1}.citizen-profile-card{align-items:flex-start;flex-direction:column}.citizen-emergency-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.citizen-workspace .main{padding:17px 13px}.citizen-workspace[data-section="Overview"] .large-panel{padding:13px}.citizen-overview-grid{grid-template-columns:minmax(0,1fr);gap:12px}.citizen-overview-grid>.public-card{grid-column:1}.citizen-profile-form{grid-template-columns:1fr}.citizen-emergency-form{grid-template-columns:1fr}.citizen-emergency-form .vulnerable-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.emergency-map{height:310px}.citizen-workspace .records{min-width:640px}}

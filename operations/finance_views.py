@@ -13,7 +13,7 @@ from .models import Organization, Profile, FundTransaction, DonationCampaign, Do
 def create_demo_donation_ledger_entry(donation, actor=None):
     campaign=donation.campaign
     if not donation.demo or donation.status!='DEMO_RECORDED' or not campaign or not campaign.organization_id: return None
-    row,_=FundTransaction.objects.get_or_create(reference='DEMO-'+donation.reference,defaults={'organization':campaign.organization,'kind':'DEMO_DONATION','amount':donation.amount,'source':f'Demo donation · {campaign.name}'[:140],'note':'Simulated citizen transfer; no money was transferred.','actor':actor or donation.donor,'donation':donation,'demo':True})
+    row,_=FundTransaction.objects.get_or_create(donation=donation,defaults={'organization':campaign.organization,'kind':'DEMO_DONATION','amount':donation.amount,'source':f'Recorded contribution · {campaign.name}'[:140],'reference':f'CONTRIB-{donation.reference}'[:48],'note':'In-app demonstration ledger entry. No external payment was processed.','actor':actor or donation.donor,'demo':True})
     return row
 
 @login_required
@@ -76,26 +76,40 @@ def campaigns(request):
 @require_http_methods(['GET','POST'])
 def donations(request):
     p=profile(request)
+    if not p: return error('Account profile is missing.',403)
     if request.method=='GET':
-        qs=Donation.objects.select_related('campaign','donor')
+        qs=Donation.objects.select_related('campaign','organization','donor').prefetch_related('history')
         if p.role=='CITIZEN': qs=qs.filter(donor=request.user)
-        elif p.role in ('NGO','GOV'): qs=qs.filter(Q(organization=p.organization)|Q(organization__isnull=True,campaign__organization=p.organization))
-        elif p.role!='ADMIN': return error('Donation history access is restricted.',403)
-        return JsonResponse({'results':[{'id':x.id,'reference':x.reference,'donor':x.donor.email,'amount':str(x.amount),'currency':x.currency,'status':x.status,'demo':x.demo,'campaign':x.campaign.name if x.campaign else None,'recipient':x.campaign.recipient if x.campaign else None,'organization':x.organization.name if x.organization else (x.campaign.organization.name if x.campaign and x.campaign.organization else None),'created_at':x.created_at.isoformat(),'confirmed_at':x.confirmed_at.isoformat() if x.confirmed_at else None,'failure_reason':x.failure_reason,'history':[{'event_type':h.event_type,'from_status':h.from_status,'to_status':h.to_status,'note':h.note,'created_at':h.created_at.isoformat()} for h in x.history.order_by('created_at')],'receipt_url':f'/api/donations/{x.pk}/receipt/'} for x in qs.select_related('organization','campaign','donor','campaign__organization').prefetch_related('history').order_by('-created_at')[:100]]})
-    if not p or p.role!='CITIZEN': return error('Only Citizens can submit donations.',403)
+        elif p.role in ('NGO','GOV'):
+            qs=qs.filter(Q(organization=p.organization)|Q(organization__isnull=True,campaign__organization=p.organization))
+        elif p.role!='ADMIN': return error('Contribution history access is restricted.',403)
+        results=[]
+        status_labels={'SUBMITTED':'Pending Review','PENDING':'Pending Review','ACCEPTED':'Approved','REJECTED':'Rejected','DEMO_RECORDED':'Recorded in demonstration ledger','PAYMENT_VERIFIED':'Payment verified','FAILED':'Payment attempt failed','CONFIRMED':'Recorded contribution'}
+        for row in qs.order_by('-created_at')[:100]:
+            reference=row.reference.replace('DON-DEMO-','CON-')
+            results.append({'id':row.id,'reference':reference,'display_reference':reference,'donor':row.donor.email,'amount':str(row.amount),'currency':row.currency,'status':row.status,'status_label':status_labels.get(row.status,row.status.replace('_',' ').title()),'demo':row.demo,'provider_reference':row.provider_reference,'campaign':row.campaign.name if row.campaign else None,'recipient':row.campaign.recipient if row.campaign else None,'organization':row.organization.name if row.organization else (row.campaign.organization.name if row.campaign and row.campaign.organization else None),'created_at':row.created_at.isoformat(),'confirmed_at':row.confirmed_at.isoformat() if row.confirmed_at else None,'failure_reason':row.failure_reason,'history':[{'event_type':event.event_type,'from_status':event.from_status,'to_status':event.to_status,'note':event.note,'created_at':event.created_at.isoformat()} for event in row.history.order_by('created_at')],'receipt_url':f'/api/donations/{row.pk}/receipt/' if row.status=='PAYMENT_VERIFIED' and not row.demo and row.provider_reference else None})
+        response={'results':results}
+        if p.role=='CITIZEN':
+            recorded=Donation.objects.filter(donor=request.user,demo=True,status='DEMO_RECORDED').aggregate(total=Sum('amount'))['total'] or 0
+            recorded+=Donation.objects.filter(donor=request.user,demo=False,status='PAYMENT_VERIFIED',provider_reference__gt='').aggregate(total=Sum('amount'))['total'] or 0
+            pending=Donation.objects.filter(donor=request.user,status='SUBMITTED').aggregate(total=Sum('amount'))['total'] or 0
+            response['summary']={'recorded_total':f'{recorded:.2f}','pending_total':f'{pending:.2f}','recorded_rule':'Demonstration-ledger entries plus provider-verified payments with a provider reference. Pending submissions are shown separately.'}
+        return JsonResponse(response)
+    if p.role!='CITIZEN': return error('Only Citizens can submit contributions.',403)
     d=payload(request)
     try: amount=Decimal(str(d.get('amount','0')))
     except InvalidOperation: amount=Decimal('0')
-    campaign=DonationCampaign.objects.filter(pk=d.get('campaign_id'),published=True,organization__in=Organization.objects.filter(kind__in=['GOV','NGO'],members__role__in=['GOV','NGO'],members__approval='APPROVED')).distinct().first()
-    if not amount.is_finite() or amount<=0: return error('Enter a valid donation amount above zero.')
-    if amount>Decimal('9999999999.99') or amount.quantize(Decimal('0.01'))!=amount: return error('Donation amount must be at most INR 9,999,999,999.99 with no more than two decimal places.')
+    eligible=Organization.objects.filter(kind__in=['GOV','NGO'],members__role__in=['GOV','NGO'],members__approval='APPROVED')
+    campaign=DonationCampaign.objects.filter(pk=d.get('campaign_id'),published=True,organization__in=eligible).distinct().first()
+    if not amount.is_finite() or amount<=0: return error('Enter a valid contribution amount above zero.')
+    if amount>Decimal('9999999999.99') or amount.quantize(Decimal('0.01'))!=amount: return error('Contribution amount must be at most INR 9,999,999,999.99 with no more than two decimal places.')
     if not campaign: return error('Choose an available published campaign.')
-    import uuid
     donation=Donation.objects.create(donor=request.user,organization=campaign.organization,campaign=campaign,amount=amount,currency=campaign.currency,status='SUBMITTED',reference='DON-'+uuid.uuid4().hex[:10].upper(),demo=False)
     DonationEvent.objects.create(donation=donation,actor=request.user,event_type='SUBMITTED',to_status='SUBMITTED',note='Contribution submission only; no payment was processed.')
-    for manager in Profile.objects.filter(organization=campaign.organization,role__in=['GOV','NGO'],approval='APPROVED').select_related('user'): notify(manager.user,'Contribution submitted',f'{donation.reference} awaits review. No payment was processed.','/gov.html' if campaign.organization.kind=='GOV' else '/ngo.html')
-    EventLog.objects.create(actor=request.user,action='Demo donation intent created' if donation.demo else 'Donation intent created',target=donation.reference,detail={'campaign':campaign.name,'amount':str(amount)})
-    return JsonResponse({'ok':True,'demo_mode':settings.DEMO_PAYMENT_MODE,'donation':{'id':donation.id,'reference':donation.reference,'amount':str(donation.amount),'currency':donation.currency,'status':donation.status,'demo':donation.demo},'message':'Donation intent saved. No money was charged.'},status=201)
+    for manager in Profile.objects.filter(organization=campaign.organization,role__in=['GOV','NGO'],approval='APPROVED').select_related('user'):
+        notify(manager.user,'Contribution submitted',f'{donation.reference} awaits review. No payment was processed.','/gov.html' if campaign.organization.kind=='GOV' else '/ngo.html')
+    EventLog.objects.create(actor=request.user,action='Contribution submission created',target=donation.reference,detail={'campaign':campaign.name,'amount':str(amount)})
+    return JsonResponse({'ok':True,'demo_mode':settings.DEMO_PAYMENT_MODE,'donation':{'id':donation.id,'reference':donation.reference,'amount':str(donation.amount),'currency':donation.currency,'status':donation.status,'demo':donation.demo},'message':'Contribution submission saved for organization review. No payment was processed.'},status=201)
 
 @login_required
 @require_http_methods(['POST'])
@@ -118,9 +132,9 @@ def demo_fund_transfer(request):
     donation=Donation.objects.create(donor=request.user,organization=campaign.organization,campaign=campaign,amount=amount,currency=campaign.currency,status='DEMO_RECORDED',reference='DON-'+uuid.uuid4().hex[:10].upper(),demo=True,confirmed_at=timezone.now())
     DonationEvent.objects.create(donation=donation,actor=request.user,event_type='DEMO_RECORDED',to_status='DEMO_RECORDED',note='Simulated ledger transaction. No real money was transferred.')
     ledger=create_demo_donation_ledger_entry(donation,request.user)
-    EventLog.objects.create(actor=request.user,action='Demo fund transfer confirmed',target=donation.reference,detail={'campaign_id':campaign.pk,'organization_id':campaign.organization_id,'amount':str(amount),'ledger_reference':ledger.reference if ledger else None})
-    notify(request.user,'Demo fund transfer recorded',f'{donation.reference}: INR {donation.amount} allocated to {campaign.organization.name}. No real money was transferred.','/citizen.html')
-    return JsonResponse({'ok':True,'demo':True,'donation_id':donation.pk,'reference':donation.reference,'amount':str(donation.amount),'organization':campaign.organization.name,'campaign':campaign.name,'status':donation.status,'receipt_url':f'/api/donations/{donation.pk}/receipt/','message':'Demo transfer recorded. No real money was transferred.'},status=201)
+    EventLog.objects.create(actor=request.user,action='Contribution ledger entry recorded',target=donation.reference,detail={'campaign_id':campaign.pk,'organization_id':campaign.organization_id,'amount':str(amount),'ledger_reference':ledger.reference if ledger else None})
+    notify(request.user,'Contribution ledger entry recorded',f'{donation.reference}: INR {donation.amount} recorded for {campaign.organization.name}. No payment was processed.','/citizen.html')
+    return JsonResponse({'ok':True,'demo':True,'donation_id':donation.pk,'reference':donation.reference,'amount':str(donation.amount),'organization':campaign.organization.name,'campaign':campaign.name,'status':donation.status,'message':'Contribution ledger entry recorded. No payment was processed.'},status=201)
 
 @login_required
 @require_http_methods(['POST'])
@@ -131,12 +145,9 @@ def demo_donation_result(request,pk):
 @login_required
 @require_http_methods(['GET'])
 def donation_receipt(request,pk):
-    donation=Donation.objects.select_related('campaign').filter(pk=pk,donor=request.user,status__in=['PAYMENT_VERIFIED','DEMO_RECORDED']).first()
-    if not donation: return error('Confirmed donation receipt not found.',404)
-    if donation.demo:
-        text_body=f'DRRAS DEMONSTRATION RECEIPT\nSIMULATED PAYMENT — NO MONEY WAS TRANSFERRED\nNot a tax receipt or proof of payment.\nReference: {donation.reference}\nCampaign: {donation.campaign.name if donation.campaign else "Relief"}\nAmount: {donation.currency} {donation.amount}\nDate: {donation.confirmed_at}\n'
-    else:
-        text_body=f'DRRAS PAYMENT RECEIPT\nReference: {donation.reference}\nCampaign: {donation.campaign.name if donation.campaign else "Relief"}\nAmount: {donation.currency} {donation.amount}\nDate: {donation.confirmed_at}\n'
+    donation=Donation.objects.select_related('campaign').filter(pk=pk,donor=request.user,status='PAYMENT_VERIFIED',demo=False,provider_reference__gt='').first()
+    if not donation: return error('A provider-verified payment record was not found.',404)
+    text_body=f'DRRAS VERIFIED PAYMENT RECEIPT\nProvider reference: {donation.provider_reference}\nContribution reference: {donation.reference}\nCampaign: {donation.campaign.name if donation.campaign else "Relief"}\nAmount: {donation.currency} {donation.amount}\nDate: {donation.confirmed_at}\n'
     response=HttpResponse(text_body,content_type='text/plain; charset=utf-8'); response['Content-Disposition']=f'attachment; filename="{donation.reference}.txt"'; return response
 
 @login_required

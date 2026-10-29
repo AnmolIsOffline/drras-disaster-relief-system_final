@@ -125,7 +125,7 @@ class InventoryMovement(models.Model):
 
 class DonationCampaign(models.Model):
     name=models.CharField(max_length=150); recipient=models.CharField(max_length=150); organization=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='donation_campaigns'); description=models.TextField(); goal_amount=models.DecimalField(max_digits=14,decimal_places=2,default=0); currency=models.CharField(max_length=3,default='INR'); published=models.BooleanField(default=False); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True)
-    def confirmed_total(self): return self.donations.filter(status='PAYMENT_VERIFIED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
+    def confirmed_total(self): return self.donations.filter(status='PAYMENT_VERIFIED',demo=False,provider_reference__gt='').aggregate(total=models.Sum('amount'))['total'] or 0
     def submitted_total(self): return self.donations.filter(status='SUBMITTED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
     def accepted_total(self): return self.donations.filter(status='ACCEPTED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
     def demo_confirmed_total(self): return self.donations.filter(status='DEMO_RECORDED',demo=True).aggregate(total=models.Sum('amount'))['total'] or 0

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import timedelta
 from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.contrib.auth import update_session_auth_hash
@@ -87,7 +88,7 @@ def dashboard(request):
     assignment_rows=Assignment.objects.filter(status__in=['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','BLOCKED'])
     shelter_rows=Shelter.objects.all()
     fund_rows=FundTransaction.objects.filter(kind='ALLOCATION')
-    donation_rows=Donation.objects.filter(status='PAYMENT_VERIFIED',demo=False)
+    donation_rows=Donation.objects.filter(status='PAYMENT_VERIFIED',demo=False,provider_reference__gt='')
     if p and p.role in ('GOV','NGO') and p.organization_id:
         organization_emergencies=all_emergencies.filter(accepted_by_id=p.organization_id)
         active_emergencies=organization_emergencies.filter(status__in=['ACCEPTED','IN_PROGRESS'])
@@ -116,7 +117,7 @@ def dashboard(request):
     demo_confirmed=demo_rows.aggregate(v=Sum('amount'))['v'] or 0
     high_priority=active_emergencies.filter(priority__in=['CRITICAL','HIGH']).values('location').distinct().count()
     affected=metric_emergencies.aggregate(v=Sum('affected'))['v'] or 0
-    counts={'users':User.objects.count(),'gov_officials':Profile.objects.filter(role='GOV').count(),'ngos':Organization.objects.filter(kind='NGO').count(),'pending_approvals':Profile.objects.filter(approval='PENDING').count(),'open_emergencies':Emergency.objects.filter(status='OPEN').count(),'pending_verification':qs.filter(status='OPEN',verification='Pending').count(),'accepted_requests':qs.filter(status='ACCEPTED').count(),'pending_allocation_authorizations':authorization_rows.count(),'active_operations':active_emergencies.count(),'assignments':assignment_rows.count(),'shelters':shelter_rows.count(),'confirmed_donations':str(confirmed),'demo_confirmed_donations':str(demo_confirmed),'high_priority_zones':high_priority,'affected_population':affected,'relief_fulfillment':round(metric_resolved*100/metric_total) if metric_total else 0,'allocated_funds':str(allocated),'recent_activity':EventLog.objects.filter(created_at__gte=timezone.now()-timedelta(hours=24)).count(),'my_assignments':Assignment.objects.filter(user=request.user,status__in=['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','BLOCKED']).count(),'my_dispatches':Dispatch.objects.filter(driver=request.user).count(),'my_notifications':Notification.objects.filter(user=request.user,read_at__isnull=True).count()}
+    counts={'users':User.objects.count(),'gov_officials':Profile.objects.filter(role='GOV').count(),'ngos':Organization.objects.filter(kind='NGO').count(),'pending_approvals':Profile.objects.filter(approval='PENDING').count(),'open_emergencies':Emergency.objects.filter(status='OPEN').count(),'pending_verification':qs.filter(status='OPEN',verification='Pending').count(),'accepted_requests':qs.filter(status='ACCEPTED').count(),'pending_allocation_authorizations':authorization_rows.count(),'active_operations':active_emergencies.count(),'assignments':assignment_rows.count(),'shelters':shelter_rows.count(),'confirmed_donations':str(confirmed),'demo_confirmed_donations':str(demo_confirmed),'high_priority_zones':high_priority,'affected_population':affected,'relief_fulfillment':round(metric_resolved*100/metric_total) if metric_total else 0,'allocated_funds':str(allocated),'recent_activity':EventLog.objects.filter(created_at__gte=timezone.now()-timedelta(hours=24)).count(),'my_assignments':Assignment.objects.filter(user=request.user,status__in=['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','BLOCKED']).count(),'my_dispatches':Dispatch.objects.filter(driver=request.user).count(),'my_notifications':Notification.objects.filter(user=request.user,read_at__isnull=True).count(),'my_requests':Emergency.objects.filter(reporter=request.user).count() if p and p.role=='CITIZEN' else 0}
     thresholds=shelter_capacity_thresholds()
     return JsonResponse({'counts':counts,'emergencies':[emergency_json(e) for e in items],'shelters':[shelter_json(s,thresholds) for s in shelter_rows.select_related('organization').order_by('name')]})
 @login_required
@@ -205,7 +206,21 @@ def settings_view(request):
     p=Profile.objects.filter(user=locked_user).first()
     if not p: return error('Account profile is missing.',403)
     request.user=locked_user
-    d=payload(request); name=(d.get('name') or '').strip(); new_password=d.get('new_password','')
+    d=payload(request)
+    if p.role=='CITIZEN':
+        unexpected=set(d)-{'name','phone'}
+        if unexpected: return error('Citizens may update only their display name and contact number.',403)
+        if not isinstance(d.get('name'),str) or not d['name'].strip() or len(d['name'].strip())>150:
+            return error('Enter a display name between 1 and 150 characters.')
+        phone=str(d.get('phone','')).strip()
+        if phone and (len(phone)>30 or not re.fullmatch(r'[0-9+().\-\s]{7,30}',phone) or sum(ch.isdigit() for ch in phone)<7):
+            return error('Enter a valid contact number with at least 7 digits.')
+        locked_user.first_name=d['name'].strip()
+        locked_user.save(update_fields=['first_name'])
+        p.phone=phone
+        p.save(update_fields=['phone'])
+        return JsonResponse({'ok':True,'message':'Profile settings saved.'})
+    name=(d.get('name') or '').strip(); new_password=d.get('new_password','')
     if new_password and not request.user.check_password(d.get('current_password','')): return error('Current password is incorrect.',403)
     if new_password and (len(new_password)<8 or new_password!=d.get('confirm_password')): return error('New password must be at least 8 characters and match confirmation.')
     if name:

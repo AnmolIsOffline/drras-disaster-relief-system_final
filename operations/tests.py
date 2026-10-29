@@ -306,7 +306,7 @@ class WorkflowTests(TestCase):
         FundTransaction.objects.create(organization=other,kind='ALLOCATION',amount='9000.00',source='Other grant',reference='NGO-SCOPE-FUND-2')
         own_campaign=DonationCampaign.objects.create(name='Own campaign',recipient='Local families',organization=self.ngo,description='Own campaign')
         other_campaign=DonationCampaign.objects.create(name='Other campaign',recipient='Other families',organization=other,description='Other campaign')
-        Donation.objects.create(donor=self.citizen,campaign=own_campaign,organization=self.ngo,amount='15.00',status='PAYMENT_VERIFIED',reference='NGO-SCOPE-DON-1',demo=False)
+        Donation.objects.create(donor=self.citizen,campaign=own_campaign,organization=self.ngo,amount='15.00',status='PAYMENT_VERIFIED',provider_reference='verified-provider-ngo-1',reference='NGO-SCOPE-DON-1',demo=False)
         Donation.objects.create(donor=self.citizen,campaign=other_campaign,organization=other,amount='950.00',status='PAYMENT_VERIFIED',reference='NGO-SCOPE-DON-2',demo=False)
         Shelter.objects.create(name='Own NGO shelter',organization=self.ngo,location='Own town',latitude=1,longitude=2,capacity=20,occupancy=4)
         Shelter.objects.create(name='Other NGO shelter',organization=other,location='Other town',latitude=3,longitude=4,capacity=80,occupancy=70)
@@ -644,7 +644,7 @@ class WorkflowTests(TestCase):
         gov_ledger=Client(); gov_ledger.force_login(self.official); self.assertEqual(gov_ledger.get('/api/funds/').json()['balances'][0]['demo_donations'],'125.50')
         ngo_ledger=Client(); ngo_ledger.force_login(self.coordinator); self.assertEqual(ngo_ledger.get('/api/funds/').json()['balances'][0]['demo_donations'],'75.25')
         donation=Donation.objects.get(pk=gov_result.json()['donation_id']); self.assertTrue(donation.demo); self.assertEqual(donation.status,'DEMO_RECORDED'); self.assertEqual(donation.confirmed_at is not None,True)
-        receipt=citizen.get(gov_result.json()['receipt_url']); self.assertEqual(receipt.status_code,200); self.assertIn(b'NO MONEY WAS TRANSFERRED',receipt.content)
+        self.assertNotIn('receipt_url',gov_result.json()); self.assertEqual(citizen.get(f'/api/donations/{donation.pk}/receipt/').status_code,404)
         mismatch=self.post(citizen,'/api/demo-transfers/',{'organization_kind':'GOV','organization_id':self.ngo.pk,'campaign_id':ngo_campaign.pk,'amount':'10.00'})
         self.assertEqual(mismatch.status_code,404); self.assertEqual(FundTransaction.objects.filter(kind='DEMO_DONATION').count(),2)
 
@@ -865,6 +865,43 @@ class WorkflowTests(TestCase):
     def test_profile_settings_reject_wrong_current_password_without_partial_update(self):
         c=Client(); c.force_login(self.citizen); response=self.post(c,'/api/settings/',{'name':'Changed Name','current_password':'wrong','new_password':'goodpassword','confirm_password':'goodpassword'})
         self.assertEqual(response.status_code,403); self.citizen.refresh_from_db(); self.assertEqual(self.citizen.first_name,'')
+
+    def test_citizen_can_update_own_display_name_and_validated_phone_only(self):
+        client=Client(); client.force_login(self.citizen)
+        saved=self.post(client,'/api/settings/',{'name':'Asha Kaur','phone':'+91 98765 43210'})
+        self.assertEqual(saved.status_code,200,saved.content)
+        self.citizen.refresh_from_db(); self.citizen.profile.refresh_from_db()
+        self.assertEqual(self.citizen.get_full_name(),'Asha Kaur'); self.assertEqual(self.citizen.profile.phone,'+91 98765 43210')
+        self.assertEqual(client.get('/api/settings/').json()['name'],'Asha Kaur')
+        invalid=self.post(client,'/api/settings/',{'name':'Must not save','phone':'not-a-phone'})
+        self.assertEqual(invalid.status_code,400); self.citizen.refresh_from_db(); self.assertEqual(self.citizen.first_name,'Asha Kaur')
+        forbidden=self.post(client,'/api/settings/',{'name':'Role tamper','phone':'9876543210','role':'ADMIN','user_id':self.official.pk})
+        self.assertEqual(forbidden.status_code,403); self.assertEqual(Profile.objects.get(user=self.citizen).role,'CITIZEN')
+
+    def test_new_citizen_can_update_profile_through_same_authenticated_endpoint(self):
+        registration=self.post(Client(),'/api/register/',{'name':'New Citizen','email':'new.citizen@example.test','password':'safe-pass-123','confirm':'safe-pass-123','role':'CITIZEN','phone':'9876543210'})
+        self.assertEqual(registration.status_code,201,registration.content)
+        created=User.objects.get(username='new.citizen@example.test'); client=Client(); self.assertEqual(self.post(client,'/api/login/',{'email':created.email,'password':'safe-pass-123'}).status_code,200)
+        updated=self.post(client,'/api/settings/',{'name':'New Citizen Updated','phone':'+91 99887 76655'})
+        self.assertEqual(updated.status_code,200); created.refresh_from_db(); self.assertEqual(created.get_full_name(),'New Citizen Updated'); self.assertEqual(created.profile.phone,'+91 99887 76655')
+
+    def test_citizen_contribution_history_and_totals_are_account_scoped(self):
+        campaign=DonationCampaign.objects.create(name='Citizen privacy campaign',recipient='Punjab households',organization=self.gov,description='Water',published=True)
+        citizen=Client(); citizen.force_login(self.citizen)
+        demo=self.post(citizen,'/api/demo-transfers/',{'organization_kind':'GOV','organization_id':self.gov.pk,'campaign_id':campaign.pk,'amount':'80.00'})
+        pending=self.post(citizen,'/api/donations/',{'campaign_id':campaign.pk,'amount':'20.00'})
+        self.assertEqual((demo.status_code,pending.status_code),(201,201))
+        other=User.objects.create_user('other.citizen@test.local',password='password123'); Profile.objects.create(user=other,role='CITIZEN')
+        other_client=Client(); other_client.force_login(other)
+        other_record=self.post(other_client,'/api/demo-transfers/',{'organization_kind':'GOV','organization_id':self.gov.pk,'campaign_id':campaign.pk,'amount':'500.00'})
+        self.assertEqual(other_record.status_code,201)
+        personal=citizen.get('/api/donations/').json(); own_ids={row['id'] for row in personal['results']}
+        self.assertEqual(own_ids,{demo.json()['donation_id'],pending.json()['donation']['id']})
+        self.assertEqual(personal['summary']['recorded_total'],'80.00'); self.assertEqual(personal['summary']['pending_total'],'20.00')
+        self.assertEqual(personal['results'][0]['status_label'],'Pending Review')
+        org=Client(); org.force_login(self.official); org_records=org.get('/api/donations/').json()['results']
+        self.assertEqual({row['id'] for row in org_records},own_ids|{other_record.json()['donation_id']})
+        self.assertEqual(campaign.confirmed_total(),Decimal('0.00')); self.assertEqual(campaign.demo_confirmed_total(),Decimal('580.00'))
     def test_repeatable_demo_seed_and_normalization_preserve_accounts_and_relationships(self):
         from django.core.management import call_command
         call_command('seed_demo')
@@ -876,6 +913,11 @@ class WorkflowTests(TestCase):
         self.assertEqual(Profile.objects.filter(role='CITIZEN',details__seed_key__isnull=False).count(), 41)
         self.assertEqual(Profile.objects.filter(role='GOV',approval='PENDING',details__seed_key__isnull=False).count(), 1)
         self.assertEqual(Profile.objects.filter(role='NGO',approval='PENDING',details__seed_key__isnull=False).count(), 1)
+        showcase=User.objects.get(email='amritpal.singh.citizen01@drras.local')
+        showcase_entry=Donation.objects.get(reference='DON-DEMO-001')
+        self.assertEqual(showcase_entry.donor_id,showcase.pk); self.assertEqual(showcase_entry.status,'DEMO_RECORDED'); self.assertTrue(showcase_entry.demo)
+        self.assertIsNotNone(showcase_entry.organization_id); self.assertEqual(showcase_entry.campaign.organization_id,showcase_entry.organization_id)
+        self.assertEqual(showcase_entry.amount,Decimal('2500.00')); self.assertEqual(FundTransaction.objects.filter(donation=showcase_entry).count(),1)
         for role in dict(Profile.ROLES):
             account = seeded.filter(role=role).first()
             if account:
@@ -913,6 +955,12 @@ class WorkflowTests(TestCase):
         created = self.post(citizen,'/api/emergencies/',{'category':'Flood','description':'Water needs review','address':'Civil Lines','district':'Ludhiana'})
         self.assertEqual(created.status_code,201)
         self.assertEqual(Emergency.objects.get(pk=created.json()['emergency']['id']).location,'Civil Lines, Ludhiana, Punjab')
+        pinned = self.post(citizen,'/api/emergencies/',{'category':'Flood','description':'Pinned incident','address':'Model Town','district':'Ludhiana','latitude':'30.901','longitude':'75.857'})
+        self.assertEqual(pinned.status_code,201,pinned.content)
+        saved=Emergency.objects.get(pk=pinned.json()['emergency']['id']); self.assertEqual((saved.address,saved.district,saved.latitude,saved.longitude),('Model Town','Ludhiana',30.901,75.857))
+        visible=citizen.get('/api/emergencies/').json()['results']; self.assertTrue(any(row['id']==saved.pk and row['latitude']==30.901 and row['longitude']==75.857 and row['address']=='Model Town' for row in visible))
+        outside_coordinate=self.post(citizen,'/api/emergencies/',{'category':'Flood','description':'Outside point','address':'Model Town','district':'Ludhiana','latitude':'28','longitude':'77'})
+        self.assertEqual(outside_coordinate.status_code,400)
 
         official = Client(); official.force_login(self.official)
         outside_shelter = self.post(official,'/api/shelters/',{'name':'Outside Shelter','location':'Market Road','district':'Ludhiana','latitude':22.57,'longitude':88.36,'capacity':20})

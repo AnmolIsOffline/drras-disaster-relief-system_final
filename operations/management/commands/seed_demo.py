@@ -162,11 +162,18 @@ class Command(BaseCommand):
             campaign,_=DonationCampaign.objects.get_or_create(name=name,organization=org,defaults={'recipient':recipient,'description':description,'goal_amount':goal,'published':True,'demo':True}); campaigns[name]=campaign
         donation_rows=[('DON-DEMO-001','2500.00','SUBMITTED','Punjab Shelter Essentials Drive'),('DON-DEMO-002','750.00','SUBMITTED','Sutlej First Aid & Medical Stock'),('DON-DEMO-003','300.00','REJECTED','Community Food Parcels')]
         for ref,amount,status,campaign_name in donation_rows:
-            donation,created=Donation.objects.get_or_create(reference=ref,defaults={'donor':users['citizen@drras.demo'],'campaign':campaigns[campaign_name],'amount':amount,'currency':'INR','status':status,'demo':True})
-            if created:
-                DonationEvent.objects.get_or_create(donation=donation,event_type=status,to_status=status,defaults={'actor':donation.donor,'note':'Fictional sample record. No payment was processed.'})
-                if status=='REJECTED':
-                    donation.failure_reason='Demonstration sample rejected state'; donation.save(update_fields=['failure_reason'])
+            initial_status='DEMO_RECORDED' if ref=='DON-DEMO-001' else status
+            donation,created=Donation.objects.get_or_create(reference=ref,defaults={'donor':users['citizen@drras.demo'],'organization':campaigns[campaign_name].organization,'campaign':campaigns[campaign_name],'amount':amount,'currency':'INR','status':initial_status,'demo':True,'confirmed_at':timezone.now() if initial_status=='DEMO_RECORDED' else None})
+            previous=donation.status
+            if ref=='DON-DEMO-001' and donation.demo and donation.status in ('SUBMITTED','PENDING') and not donation.provider_reference:
+                donation.organization=donation.campaign.organization; donation.status='DEMO_RECORDED'; donation.confirmed_at=donation.confirmed_at or timezone.now()
+                donation.save(update_fields=['organization','status','confirmed_at'])
+            DonationEvent.objects.get_or_create(donation=donation,event_type=donation.status,to_status=donation.status,defaults={'actor':donation.donor,'from_status':previous if previous!=donation.status else '','note':'In-app demonstration ledger entry; no external payment was processed.' if donation.status=='DEMO_RECORDED' else 'Saved contribution workflow record; no payment was processed.'})
+            if created and status=='REJECTED':
+                donation.failure_reason='Recipient rejected the sample contribution submission'; donation.save(update_fields=['failure_reason'])
+            if ref=='DON-DEMO-001':
+                from operations.finance_views import create_demo_donation_ledger_entry
+                create_demo_donation_ledger_entry(donation,donation.donor)
         ticket_rows=[
             (users['citizen@drras.demo'],'Shelter accessibility information','Shelters','Please confirm wheelchair access at the nearest relief centre.','In Progress','HIGH'),
             (users['volunteer@drras.demo'],'Field kit collection point','Volunteer support','Please confirm the collection window for first-aid kits before my assigned shift.','Open','NORMAL'),
