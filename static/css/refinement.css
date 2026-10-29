@@ -38,3 +38,16 @@ body{background:#f5f7fb;color:#17243b}
 input:focus,select:focus,textarea:focus{outline:3px solid #2563d91c!important;border-color:#6d91df!important}
 @media(max-width:950px){.main{padding:22px 20px}.workspace-grid{grid-template-columns:minmax(0,1fr)}.side-panel{display:grid;grid-template-columns:1fr 1fr;column-gap:18px}.side-panel .panel-head{grid-column:1/-1}.side-panel #map{grid-column:2;grid-row:2/6;margin:0;height:100%;min-height:210px}}
 @media(max-width:640px){.main{padding:17px 13px}.topbar{gap:12px}.topbar h1{font-size:20px}.welcome-row{gap:12px;flex-wrap:wrap}.live-tag{font-size:8px}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{min-width:0;min-height:100px;padding:13px}.metric label{line-height:1.4}.metric strong{font-size:21px;overflow-wrap:anywhere}.side-panel{display:block}.side-panel #map{height:230px;margin-top:16px}.panel{padding:14px}.action-form>*{min-width:min(100%,180px)!important}.action-form label{min-width:100%}.public-nav{height:auto;min-height:64px}.public-nav nav{flex-wrap:wrap;justify-content:flex-end}}
+.citizen-workspace[data-section]:not([data-section="Overview"]) .welcome-row,
+.citizen-workspace[data-section]:not([data-section="Overview"]) #overview,
+.citizen-workspace[data-section]:not([data-section="Overview"]) .side-panel{display:none!important}
+.citizen-workspace[data-section="Overview"] .side-panel{display:block}
+.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr) 320px}
+.citizen-emergency-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+.citizen-emergency-form>label{display:grid;gap:7px}
+.citizen-emergency-form .full-field,.citizen-emergency-form fieldset{grid-column:1/-1}
+.citizen-emergency-form .vulnerable-counts{display:grid;grid-template-columns:repeat(5,minmax(90px,1fr));gap:12px;border:1px solid var(--line);border-radius:8px;padding:14px}
+.citizen-emergency-form .vulnerable-counts legend{padding:0 7px;color:var(--muted);font-size:12px;font-weight:650}
+.citizen-emergency-form .vulnerable-counts label{display:grid;gap:6px}
+.emergency-map{height:300px;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:12px}
+@media(max-width:760px){.citizen-workspace[data-section="Overview"] .workspace-grid{grid-template-columns:minmax(0,1fr)}.citizen-emergency-form{grid-template-columns:1fr}.citizen-emergency-form .vulnerable-counts{grid-template-columns:repeat(2,minmax(0,1fr))}}

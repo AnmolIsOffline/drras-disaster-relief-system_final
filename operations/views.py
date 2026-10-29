@@ -14,13 +14,23 @@ from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 from .api_common import error, profile, payload, notify, sqlite_write_conflict
 from .geography import PUNJAB_DISTRICTS, format_punjab_address, is_punjab_coordinate
-from .models import Profile, Organization, Emergency, EmergencyEvent, Assignment, AssignmentEvent, AllocationAuthorization, AllocationAuthorizationEvent, Shelter, ShelterEvent, Donation, Advisory, AdvisoryEvent, Inventory, InventoryMovement, EventLog, SupportTicket, SupportReply, Notification, ZoneApplication, ZoneApplicationEvent, Vehicle, Dispatch, DispatchEvent, DeliveryRecord, FundTransaction, SystemPreference, SafetyTraining, TrainingCompletion
+from .models import Profile, Organization, Emergency, EmergencyEvent, Assignment, AssignmentEvent, AllocationAuthorization, AllocationAuthorizationEvent, Shelter, ShelterEvent, Donation, Advisory, AdvisoryEvent, Inventory, InventoryMovement, EventLog, SupportTicket, SupportTicketEvent, SupportReply, Notification, ZoneApplication, ZoneApplicationEvent, Vehicle, Dispatch, DispatchEvent, DeliveryRecord, FundTransaction, SystemPreference, SafetyTraining, TrainingCompletion
 User=get_user_model()
 ROLE_PAGE={'ADMIN':'admin.html','GOV':'gov.html','NGO':'ngo.html','GOV_VOL':'gov_volunteer.html','NGO_VOL':'ngo_volunteer.html','GOV_DRIVER':'govt_driver.html','NGO_DRIVER':'ngo_driver.html','CITIZEN':'citizen.html'}
 def record_emergency_event(emergency,actor,event_type,from_status='',to_status='',note=''):
     return EmergencyEvent.objects.create(emergency=emergency,actor=actor,event_type=event_type,from_status=from_status,to_status=to_status,note=note)
 def public_profile_details(details):
     return {key:value for key,value in (details or {}).items() if key not in ('seed_key','demo')}
+def calculate_emergency_priority(severity, affected, injured, vulnerable_counts):
+    """Map severity to baseline priority, then escalate for counts: >=25 affected or >=3 injured is CRITICAL; any injury/vulnerability or >=10 affected is HIGH; >=3 affected is at least MEDIUM."""
+    priority={'LOW':'LOW','MODERATE':'MEDIUM','SEVERE':'HIGH','CRITICAL':'CRITICAL'}[severity]
+    injured=injured or 0
+    affected_known=affected is not None
+    vulnerable_total=sum(value for value in vulnerable_counts.values() if value is not None)
+    if injured>=3 or (affected_known and affected>=25): return 'CRITICAL'
+    if injured>0 or vulnerable_total>0 or (affected_known and affected>=10): return 'HIGH'
+    if affected_known and affected>=3 and priority=='LOW': return 'MEDIUM'
+    return priority
 def page(request,page='index'):
     allowed={'index','login','register','admin','gov','ngo','gov_volunteer','ngo_volunteer','govt_driver','ngo_driver','citizen'}
     if page not in allowed: page='index'
@@ -77,7 +87,7 @@ def dashboard(request):
     assignment_rows=Assignment.objects.filter(status__in=['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','BLOCKED'])
     shelter_rows=Shelter.objects.all()
     fund_rows=FundTransaction.objects.filter(kind='ALLOCATION')
-    donation_rows=Donation.objects.filter(status='CONFIRMED')
+    donation_rows=Donation.objects.filter(status='PAYMENT_VERIFIED',demo=False)
     if p and p.role in ('GOV','NGO') and p.organization_id:
         organization_emergencies=all_emergencies.filter(accepted_by_id=p.organization_id)
         active_emergencies=organization_emergencies.filter(status__in=['ACCEPTED','IN_PROGRESS'])
@@ -99,8 +109,11 @@ def dashboard(request):
     if p and p.role=='NGO' and p.organization_id:
         authorization_rows=authorization_rows.filter(organization_id=p.organization_id)
     allocated=fund_rows.aggregate(v=Sum('amount'))['v'] or 0
-    confirmed=donation_rows.filter(demo=False).aggregate(v=Sum('amount'))['v'] or 0
-    demo_confirmed=donation_rows.filter(demo=True).aggregate(v=Sum('amount'))['v'] or 0
+    confirmed=donation_rows.aggregate(v=Sum('amount'))['v'] or 0
+    demo_rows=FundTransaction.objects.filter(kind='DEMO_DONATION',demo=True)
+    if p and p.role in ('GOV','NGO'): demo_rows=demo_rows.filter(organization_id=p.organization_id)
+    elif p and p.role=='CITIZEN': demo_rows=demo_rows.filter(donation__donor=request.user)
+    demo_confirmed=demo_rows.aggregate(v=Sum('amount'))['v'] or 0
     high_priority=active_emergencies.filter(priority__in=['CRITICAL','HIGH']).values('location').distinct().count()
     affected=metric_emergencies.aggregate(v=Sum('affected'))['v'] or 0
     counts={'users':User.objects.count(),'gov_officials':Profile.objects.filter(role='GOV').count(),'ngos':Organization.objects.filter(kind='NGO').count(),'pending_approvals':Profile.objects.filter(approval='PENDING').count(),'open_emergencies':Emergency.objects.filter(status='OPEN').count(),'pending_verification':qs.filter(status='OPEN',verification='Pending').count(),'accepted_requests':qs.filter(status='ACCEPTED').count(),'pending_allocation_authorizations':authorization_rows.count(),'active_operations':active_emergencies.count(),'assignments':assignment_rows.count(),'shelters':shelter_rows.count(),'confirmed_donations':str(confirmed),'demo_confirmed_donations':str(demo_confirmed),'high_priority_zones':high_priority,'affected_population':affected,'relief_fulfillment':round(metric_resolved*100/metric_total) if metric_total else 0,'allocated_funds':str(allocated),'recent_activity':EventLog.objects.filter(created_at__gte=timezone.now()-timedelta(hours=24)).count(),'my_assignments':Assignment.objects.filter(user=request.user,status__in=['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','BLOCKED']).count(),'my_dispatches':Dispatch.objects.filter(driver=request.user).count(),'my_notifications':Notification.objects.filter(user=request.user,read_at__isnull=True).count()}
@@ -266,10 +279,10 @@ def training(request):
     if p.role!='ADMIN': modules=[module for module in modules if p.role in module.required_roles]
     completions={row.training_id:row for row in TrainingCompletion.objects.filter(user=request.user,training__in=modules)}
     return JsonResponse({'results':[{'id':module.pk,'code':module.code,'title':module.title,'category':module.category,'content':module.content,'required_roles':module.required_roles,'demo':module.demo,'completed_at':completions[module.pk].completed_at.isoformat() if module.pk in completions and completions[module.pk].completed_at else None,'acknowledged_at':completions[module.pk].acknowledged_at.isoformat() if module.pk in completions and completions[module.pk].acknowledged_at else None} for module in modules]})
-def emergency_json(e):
+def emergency_json(e, include_assignment_contact=False):
     assignments=e.assignments.select_related('user','organization','assigned_by').order_by('kind','user__first_name')
     dispatches=e.dispatches.select_related('driver','vehicle').order_by('created_at')
-    return {'id':e.id,'reference':e.reference,'reporter_id':e.reporter_id,'category':e.category,'priority':e.priority,'description':e.description,'location':e.location,'latitude':e.latitude,'longitude':e.longitude,'affected':e.affected,'required_skills':[s.strip() for s in e.required_skills.split(',') if s.strip()],'needs_transport':e.needs_transport,'required_vehicle_capacity':e.required_vehicle_capacity,'status':e.status,'verification':e.verification,'accepted_by':e.accepted_by.name if e.accepted_by else None,'demo':e.demo,'created_at':e.created_at.isoformat(),'history':[{'event_type':h.event_type,'from_status':h.from_status,'to_status':h.to_status,'note':h.note,'actor':h.actor.get_full_name() if h.actor else 'System','created_at':h.created_at.isoformat()} for h in e.history.select_related('actor').order_by('created_at')],'assignments':[{'id':a.id,'user_id':a.user_id,'name':a.user.get_full_name() or a.user.username,'organization_id':a.organization_id,'organization':a.organization.name if a.organization else None,'assigned_by_id':a.assigned_by_id,'assigned_by':(a.assigned_by.get_full_name() or a.assigned_by.email) if a.assigned_by else None,'created_at':a.created_at.isoformat(),'kind':a.kind,'status':a.status,'task_instructions':a.task_instructions,'completion_report':a.completion_report,'blocked_note':a.blocked_note,'acknowledged_at':a.acknowledged_at.isoformat() if a.acknowledged_at else None,'updated_at':a.updated_at.isoformat(),'history':[{'status':h.status,'note':h.note,'actor':h.actor.get_full_name() if h.actor else 'System','created_at':h.created_at.isoformat()} for h in a.history.select_related('actor').order_by('created_at')]} for a in assignments],'dispatches':[{'id':d.id,'driver':d.driver.get_full_name() or d.driver.username,'vehicle':d.vehicle.registration if d.vehicle else None,'status':d.status,'pickup_location':d.pickup_location,'destination':d.destination,'cargo_details':d.cargo_details,'delivery_proof':d.delivery_proof,'updated_at':d.updated_at.isoformat()} for d in dispatches]}
+    return {'id':e.id,'reference':e.reference,'reporter_id':e.reporter_id,'category':e.category,'severity':e.severity,'priority':e.priority,'priority_override_reason':e.priority_override_reason,'description':e.description,'location':e.location,'address':e.address,'district':e.district,'latitude':e.latitude,'longitude':e.longitude,'affected':e.affected,'injured':e.injured,'vulnerable_counts':e.vulnerable_counts or {},'required_skills':[s.strip() for s in e.required_skills.split(',') if s.strip()],'needs_transport':e.needs_transport,'required_vehicle_capacity':e.required_vehicle_capacity,'status':e.status,'verification':e.verification,'accepted_by':e.accepted_by.name if e.accepted_by else None,'demo':e.demo,'created_at':e.created_at.isoformat(),'updated_at':e.updated_at.isoformat(),'history':[{'event_type':h.event_type,'from_status':h.from_status,'to_status':h.to_status,'note':h.note,'actor':h.actor.get_full_name() if h.actor else 'System','created_at':h.created_at.isoformat()} for h in e.history.select_related('actor').order_by('created_at')],'assignments':[{'id':a.id,'user_id':a.user_id,'name':a.user.get_full_name() or a.user.username,'phone':a.user.profile.phone if include_assignment_contact and hasattr(a.user,'profile') else '', 'organization_id':a.organization_id,'organization':a.organization.name if a.organization else None,'assigned_by_id':a.assigned_by_id,'assigned_by':(a.assigned_by.get_full_name() or a.assigned_by.email) if a.assigned_by else None,'created_at':a.created_at.isoformat(),'kind':a.kind,'status':a.status,'task_instructions':a.task_instructions,'completion_report':a.completion_report,'blocked_note':a.blocked_note,'acknowledged_at':a.acknowledged_at.isoformat() if a.acknowledged_at else None,'updated_at':a.updated_at.isoformat(),'history':[{'status':h.status,'note':h.note,'actor':h.actor.get_full_name() if h.actor else 'System','created_at':h.created_at.isoformat()} for h in a.history.select_related('actor').order_by('created_at')]} for a in assignments],'dispatches':[{'id':d.id,'driver':d.driver.get_full_name() or d.driver.username,'vehicle':d.vehicle.registration if d.vehicle else None,'status':d.status,'pickup_location':d.pickup_location,'cargo_details':d.cargo_details,'delivery_proof':d.delivery_proof,'delivery':delivery_json(d.delivery_record) if hasattr(d,'delivery_record') else None,'updated_at':d.updated_at.isoformat()} for d in dispatches]}
 @login_required
 @require_http_methods(['GET','POST'])
 def emergencies(request):
@@ -290,7 +303,7 @@ def emergencies(request):
             limit=min(100,max(1,int(request.GET.get('limit',50)))); offset=max(0,int(request.GET.get('offset',0)))
         except ValueError: return error('Limit and offset must be whole numbers.')
         qs=qs.distinct().order_by('-created_at'); total=qs.count()
-        return JsonResponse({'results':[emergency_json(e) for e in qs[offset:offset+limit]],'pagination':{'total':total,'limit':limit,'offset':offset,'next_offset':offset+limit if offset+limit<total else None,'previous_offset':max(0,offset-limit) if offset else None}})
+        return JsonResponse({'results':[emergency_json(e,include_assignment_contact=bool(p and p.role=='CITIZEN' and e.reporter_id==request.user.id)) for e in qs[offset:offset+limit]],'pagination':{'total':total,'limit':limit,'offset':offset,'next_offset':offset+limit if offset+limit<total else None,'previous_offset':max(0,offset-limit) if offset else None}})
     d=payload(request)
     can_report=bool(p and (p.role=='CITIZEN' or (p.role=='GOV' and p.approval=='APPROVED')))
     if not can_report: return error('Citizen or approved Government Official access is required to submit a request.',403)
@@ -301,16 +314,39 @@ def emergencies(request):
     if d.get('latitude') not in (None,'') or d.get('longitude') not in (None,''):
         if not is_punjab_coordinate(d.get('latitude'),d.get('longitude')):
             return error('Emergency coordinates must fall within Punjab.')
-    import uuid
-    default_priority=SystemPreference.objects.filter(key='default_emergency_priority').values_list('value',flat=True).first() or 'MEDIUM'
-    priority=d.get('priority') or default_priority
-    if priority not in ('CRITICAL','HIGH','MEDIUM','LOW'): return error('Choose a valid emergency priority.')
+    def optional_count(key, default):
+        value=d.get(key, default)
+        if value in (None, ''): return None
+        value=int(value)
+        if value < 0: raise ValueError
+        return value
     try:
-        affected=max(1,int(d.get('affected',1))); required_vehicle_capacity=max(0,int(d.get('required_vehicle_capacity',0)))
-    except (ValueError,TypeError): return error('Affected population and vehicle capacity must be whole numbers.')
-    raw_skills=d.get('required_skills',''); required_skills=', '.join(dict.fromkeys(s.strip() for s in raw_skills.split(',') if s.strip())) if isinstance(raw_skills,str) else ''
-    needs_transport=d.get('needs_transport') in (True,'true','True','on','1',1)
-    e=Emergency.objects.create(reference='PB-'+uuid.uuid4().hex[:8].upper(),reporter=request.user,category=d['category'],priority=priority,description=d['description'],location=location,affected=affected,latitude=d.get('latitude'),longitude=d.get('longitude'),required_skills=required_skills,needs_transport=needs_transport,required_vehicle_capacity=required_vehicle_capacity)
+        affected=optional_count('affected',1); injured=optional_count('injured',0)
+    except (ValueError,TypeError): return error('Affected and injured counts must be non-negative whole numbers or blank when unknown.')
+    vulnerable=d.get('vulnerable_counts') or {}
+    if isinstance(vulnerable,str):
+        try: vulnerable=json.loads(vulnerable)
+        except (ValueError,TypeError): return error('Vulnerable population counts are invalid.')
+    allowed_vulnerable={'children','elderly','pregnant','people_with_disabilities','infants'}
+    if not isinstance(vulnerable,dict) or set(vulnerable)-allowed_vulnerable: return error('Vulnerable population counts contain unsupported categories.')
+    try:
+        vulnerable={key:(None if value in (None,'') else int(value)) for key,value in vulnerable.items()}
+        if any(value is not None and value < 0 for value in vulnerable.values()): raise ValueError
+    except (ValueError,TypeError): return error('Vulnerable population counts must be whole numbers.')
+    known_vulnerable=sum(value for value in vulnerable.values() if value is not None)
+    if affected is not None and ((injured is not None and injured>affected) or known_vulnerable>affected): return error('Injured and vulnerable counts cannot exceed the affected population.')
+    severity=d.get('severity','MODERATE')
+    if severity not in dict(Emergency.SEVERITIES): return error('Choose a valid incident severity.')
+    priority=calculate_emergency_priority(severity,affected,injured,vulnerable)
+    import uuid
+    # Government incident intake may still record operational transport needs;
+    # Citizens do not submit resource or vehicle requests from this form.
+    needs_transport=bool(p.role=='GOV' and d.get('needs_transport') in (True,'true','True','on','1',1))
+    try: required_vehicle_capacity=max(0,int(d.get('required_vehicle_capacity',0))) if needs_transport else 0
+    except (ValueError,TypeError): return error('Vehicle capacity must be a whole number.')
+    raw_skills=d.get('required_skills','') if p.role=='GOV' else ''
+    required_skills=', '.join(dict.fromkeys(s.strip() for s in raw_skills.split(',') if s.strip())) if isinstance(raw_skills,str) else ''
+    e=Emergency.objects.create(reference='PB-'+uuid.uuid4().hex[:8].upper(),reporter=request.user,category=d['category'],severity=severity,priority=priority,description=d['description'],location=location,address=str(d['address']).strip(),district=str(d['district']).strip(),affected=affected,injured=injured,vulnerable_counts=vulnerable,latitude=d.get('latitude') or None,longitude=d.get('longitude') or None,needs_transport=needs_transport,required_vehicle_capacity=required_vehicle_capacity,required_skills=required_skills)
     record_emergency_event(e,request.user,'SUBMITTED','',e.status,'Emergency request submitted')
     EventLog.objects.create(actor=request.user,action='Emergency submitted',target=e.reference)
     for target in Profile.objects.filter(role__in=['GOV','NGO'],approval='APPROVED').select_related('user'):
@@ -382,12 +418,20 @@ def triage_emergency(request,pk):
     p=profile(request); e=Emergency.objects.filter(pk=pk).first()
     if not e: return error('Emergency not found.',404)
     if not p or p.role!='GOV' or p.approval!='APPROVED': return error('Approved Government Official access required.',403)
-    verification=payload(request).get('verification')
+    data=payload(request); verification=data.get('verification'); priority=data.get('priority'); reason=str(data.get('priority_override_reason','')).strip()
     if verification not in ('Verified','Rejected','Pending'): return error('Choose Verified, Rejected or Pending.')
-    e.verification=verification; e.save(update_fields=['verification']); EventLog.objects.create(actor=request.user,action='Emergency triage updated',target=e.reference,detail={'verification':verification})
+    if priority is not None:
+        if priority not in dict(Emergency.PRIORITIES) or not reason: return error('A valid priority and override reason are required.')
+    e.verification=verification
+    e.save(update_fields=['verification','updated_at'])
+    EventLog.objects.create(actor=request.user,action='Emergency triage updated',target=e.reference,detail={'verification':verification})
+    if priority is not None:
+        old=e.priority; e.priority=priority; e.priority_override_by=request.user; e.priority_override_reason=reason[:2000]; e.priority_overridden_at=timezone.now()
+        e.save(update_fields=['priority','priority_override_by','priority_override_reason','priority_overridden_at','updated_at'])
+        EventLog.objects.create(actor=request.user,action='Emergency priority overridden',target=e.reference,detail={'from':old,'to':priority,'reason':reason[:2000]})
     record_emergency_event(e,request.user,'TRIAGE',e.status,e.status,verification)
     notify(e.reporter,'Emergency request reviewed',f'{e.reference} verification status: {verification}.','/citizen.html')
-    return JsonResponse({'ok':True,'verification':verification})
+    return JsonResponse({'ok':True,'verification':verification,'priority':e.priority})
 @login_required
 @require_http_methods(['POST'])
 @sqlite_write_conflict('SQLite is busy allocating responders. Refresh availability and try again.')
@@ -670,7 +714,7 @@ def dispatches(request):
     return JsonResponse({'results':[{'id':d.id,'emergency':d.emergency.reference,'pickup_location':d.pickup_location,'location':d.destination,'cargo_details':d.cargo_details,'trip_instructions':d.trip_instructions,'delivery_proof':d.delivery_proof,'driver':d.driver.get_full_name(),'vehicle':d.vehicle.registration if d.vehicle else None,'vehicle_capacity':d.vehicle.capacity if d.vehicle else None,'status':d.status,'created_at':d.created_at.isoformat(),'updated_at':d.updated_at.isoformat(),'delivered_at':d.delivered_at.isoformat() if d.delivered_at else None,'delivery':delivery_json(d.delivery_record) if hasattr(d,'delivery_record') else None,'history':[{'status':h.status,'note':h.note,'actor':h.actor.get_full_name() if h.actor else 'System','created_at':h.created_at.isoformat()} for h in d.history.select_related('actor').order_by('created_at')]} for d in qs.order_by('-created_at')[:200]]})
 
 def delivery_json(row):
-    return {'id':row.pk,'dispatch_id':row.dispatch_id,'emergency_id':row.emergency_id,'emergency':row.emergency.reference,'driver':row.driver.get_full_name() or row.driver.email,'vehicle':row.vehicle.registration if row.vehicle else None,'organization':row.organization.name,'recipient_name':row.recipient_name,'address':row.address,'items':row.items,'delivered_at':row.delivered_at.isoformat(),'photo_url':f'/api/deliveries/{row.pk}/photo/','remarks':row.remarks,'status':row.status,'citizen_responded_at':row.citizen_responded_at.isoformat() if row.citizen_responded_at else None,'issue_details':row.issue_details,'created_at':row.created_at.isoformat(),'updated_at':row.updated_at.isoformat()}
+    return {'id':row.pk,'dispatch_id':row.dispatch_id,'emergency_id':row.emergency_id,'emergency':row.emergency.reference,'driver':row.driver.get_full_name() or row.driver.email,'vehicle':row.vehicle.registration if row.vehicle else None,'organization':row.organization.name,'recipient_name':row.recipient_name,'address':row.address,'items':row.items,'delivered_at':row.delivered_at.isoformat(),'photo_url':f'/api/deliveries/{row.pk}/photo/' if row.photo else None,'remarks':row.remarks,'demo':row.demo,'status':row.status,'citizen_responded_at':row.citizen_responded_at.isoformat() if row.citizen_responded_at else None,'issue_details':row.issue_details,'created_at':row.created_at.isoformat(),'updated_at':row.updated_at.isoformat()}
 
 def valid_delivery_photo(upload):
     if not upload or upload.size>8*1024*1024: return False
@@ -708,7 +752,7 @@ def submit_delivery(request,pk):
     if timezone.is_naive(delivered_at): delivered_at=timezone.make_aware(delivered_at,timezone.get_current_timezone())
     photo=request.FILES.get('photo')
     if not valid_delivery_photo(photo): return error('Upload a JPEG, PNG, or WebP photo up to 8 MB.')
-    row=DeliveryRecord.objects.create(dispatch=dispatch,emergency=dispatch.emergency,driver=request.user,vehicle=dispatch.vehicle,organization=dispatch.organization,recipient_name=recipient,address=address,items=normalized,delivered_at=delivered_at,photo=photo,remarks=remarks)
+    row=DeliveryRecord.objects.create(dispatch=dispatch,emergency=dispatch.emergency,driver=request.user,vehicle=dispatch.vehicle,organization=dispatch.organization,recipient_name=recipient,address=address,items=normalized,delivered_at=delivered_at,photo=photo,remarks=remarks,demo=dispatch.emergency.demo)
     old_status=dispatch.status; dispatch.status='DELIVERED'; dispatch.delivered_at=delivered_at; dispatch.delivery_proof=f'Delivery record {row.pk} submitted; waiting for Citizen confirmation.'; dispatch.save(update_fields=['status','delivered_at','delivery_proof','updated_at'])
     DispatchEvent.objects.create(dispatch=dispatch,actor=request.user,status='DELIVERED',note=f'Delivery details submitted; awaiting Citizen confirmation. Record {row.pk}.')
     assignment=Assignment.objects.filter(emergency=dispatch.emergency,user=request.user,kind='DRIVER').first()
@@ -851,7 +895,10 @@ def shelters(request):
         location=format_punjab_address(d.get('address') or d.get('location'),d.get('district'))
         shelter_status=d.get('status','Open')
         if shelter_status not in ('Open','Full','Temporarily Closed'): return error('Choose a valid shelter status.')
-        s=Shelter.objects.create(name=str(d['name']).strip(),organization=p.organization,location=location,shelter_type=str(d.get('type',d.get('shelter_type','Shelter'))).strip()[:40] or 'Shelter',description=str(d.get('description','')).strip(),latitude=latitude,longitude=longitude,capacity=capacity,occupancy=occupancy,status=shelter_status)
+        phone=str(d.get('contact_phone','')).strip()
+        if not __import__('re').fullmatch(r'\+?[0-9][0-9\s().-]{6,24}',phone): return error('Enter a valid shelter contact phone number.')
+        district=str(d['district']).strip(); address=str(d.get('address') or d.get('location') or '').strip()
+        s=Shelter.objects.create(name=str(d['name']).strip(),organization=p.organization,location=location,address=address,district=district,contact_phone=phone,shelter_type=str(d.get('type',d.get('shelter_type','Shelter'))).strip()[:40] or 'Shelter',description=str(d.get('description','')).strip(),latitude=latitude,longitude=longitude,capacity=capacity,occupancy=occupancy,status=shelter_status)
         ShelterEvent.objects.create(shelter=s,actor=request.user,event_type='CREATED',changes={'status':s.status,'capacity':capacity,'occupancy':occupancy,'location':s.location})
         EventLog.objects.create(actor=request.user,action='Shelter registered',target=s.name,detail={'organization':p.organization.name,'latitude':latitude,'longitude':longitude})
     except (KeyError,ValueError,TypeError): return error('Provide shelter name, location, coordinates and capacity.')
@@ -874,18 +921,22 @@ def shelter_json(s,thresholds=None):
     elif s.occupancy*100>=s.capacity*thresholds['nearly_full_pct']: band='Nearly full'
     elif s.occupancy*100>=s.capacity*thresholds['high_occupancy_pct']: band='High occupancy'
     else: band='Available'
-    return {'id':s.id,'name':s.name,'organization':s.organization.name if s.organization else None,'latitude':s.latitude,'longitude':s.longitude,'location':s.location,'type':s.shelter_type,'description':s.description,'capacity':s.capacity,'occupancy':s.occupancy,'occupancy_pct':percent,'occupancy_band':band,'available':s.available,'status':s.status,'updated_at':s.updated_at.isoformat(),'demo':s.demo}
+    return {'id':s.id,'name':s.name,'organization':s.organization.name if s.organization else None,'contact_phone':s.contact_phone,'address':s.address,'district':s.district,'latitude':s.latitude,'longitude':s.longitude,'location':s.location,'type':s.shelter_type,'description':s.description,'capacity':s.capacity,'occupancy':s.occupancy,'occupancy_pct':percent,'occupancy_band':band,'available':s.available,'status':s.status,'updated_at':s.updated_at.isoformat(),'demo':s.demo}
 @login_required
 @require_http_methods(['PATCH'])
 def update_shelter(request,pk):
     p=profile(request); s=Shelter.objects.select_related('organization').filter(pk=pk).first()
     if not s: return error('Shelter not found.',404)
     if not p or p.role not in ('ADMIN','GOV','NGO') or (p.role!='ADMIN' and s.organization_id!=p.organization_id): return error('You cannot update this shelter.',403)
-    original={field:getattr(s,field) for field in ('name','location','shelter_type','description','latitude','longitude','capacity','occupancy','status')}
+    original={field:getattr(s,field) for field in ('name','location','address','district','contact_phone','shelter_type','description','latitude','longitude','capacity','occupancy','status')}
     d=payload(request)
     if 'district' in d or 'address' in d:
         try: d['location']=format_punjab_address(d.get('address') or d.get('location'),d.get('district'))
         except ValueError as exc: return error(str(exc))
+        s.address=str(d.get('address') or d.get('location') or '').strip(); s.district=str(d.get('district') or s.district).strip()
+    if 'contact_phone' in d:
+        s.contact_phone=str(d['contact_phone']).strip()
+        if not __import__('re').fullmatch(r'\+?[0-9][0-9\s().-]{6,24}',s.contact_phone): return error('Enter a valid shelter contact phone number.')
     try: capacity=int(d.get('capacity',s.capacity)); occupancy=int(d.get('occupancy',s.occupancy)); latitude=float(d.get('latitude',s.latitude)); longitude=float(d.get('longitude',s.longitude))
     except (ValueError,TypeError): return error('Capacity, occupancy, latitude and longitude must be numeric.')
     if capacity<1 or occupancy<0 or occupancy>capacity: return error('Shelter occupancy must be between zero and capacity.')
@@ -902,7 +953,7 @@ def update_shelter(request,pk):
         if d['status'] not in ('Open','Full','Temporarily Closed'): return error('Choose a valid shelter status.')
         s.status=d['status']
     changed={}
-    for field in ('name','location','shelter_type','description','latitude','longitude','capacity','occupancy','status'):
+    for field in ('name','location','address','district','contact_phone','shelter_type','description','latitude','longitude','capacity','occupancy','status'):
         if original[field] != getattr(s,field): changed[field]={'from':original[field],'to':getattr(s,field)}
     s.save()
     if changed: ShelterEvent.objects.create(shelter=s,actor=request.user,event_type='UPDATED',changes=changed)
@@ -922,7 +973,7 @@ def advisories(request):
     if request.method=='GET':
         p=profile(request) if request.user.is_authenticated else None
         managing=bool(p and p.role in ('ADMIN','GOV') and p.approval=='APPROVED' and request.GET.get('manage')=='1')
-        rows=Advisory.objects.all() if managing else Advisory.objects.filter(published=True,archived=False,withdrawn=False)
+        rows=Advisory.objects.all() if managing else Advisory.objects.filter(published=True,archived=False,withdrawn=False).filter(Q(expires_at__isnull=True)|Q(expires_at__gt=timezone.now()))
         return JsonResponse({'results':[advisory_json(a,managing) for a in rows.order_by('-updated_at')[:100]]})
     p=profile(request)
     if not request.user.is_authenticated or not p or p.role not in ('ADMIN','GOV') or p.approval!='APPROVED': return error('Approved Administrator or Government Official access required.',403)
@@ -934,7 +985,14 @@ def advisories(request):
     if action is None: action='PUBLISH' if d.get('published',True) else 'SAVE'
     if action not in ('SAVE','DRAFT','PUBLISH'): return error('Choose whether to save a draft or publish the advisory.')
     published=action=='PUBLISH'
-    a=Advisory.objects.create(title=str(d['title']).strip(),body=str(d['body']).strip(),location=str(d.get('location','')).strip(),severity=severity,published=published)
+    expires_at=None
+    if d.get('expires_at'):
+        expires_at=parse_datetime(str(d['expires_at']))
+        if not expires_at: return error('Advisory expiry must be a valid date and time.')
+        if timezone.is_naive(expires_at): expires_at=timezone.make_aware(expires_at,timezone.get_current_timezone())
+        if expires_at<=timezone.now(): return error('Advisory expiry must be in the future.')
+    category=str(d.get('category','Public safety')).strip()[:80] or 'Public safety'
+    a=Advisory.objects.create(title=str(d['title']).strip(),category=category,body=str(d['body']).strip(),location=str(d.get('location','')).strip(),severity=severity,published=published,published_by=request.user if published else None,expires_at=expires_at)
     event_type='PUBLISHED' if published else 'DRAFTED'
     AdvisoryEvent.objects.create(advisory=a,actor=request.user,event_type=event_type,detail={'severity':severity})
     EventLog.objects.create(actor=request.user,action='Advisory published' if published else 'Advisory drafted',target=a.title)
@@ -943,7 +1001,7 @@ def advisories(request):
     return JsonResponse({'ok':True,'advisory':advisory_json(a,True)},status=201)
 
 def advisory_json(advisory,include_history=False):
-    row={'id':advisory.id,'title':advisory.title,'body':advisory.body,'location':advisory.location,'severity':advisory.severity,'published':advisory.published,'archived':advisory.archived,'withdrawn':advisory.withdrawn,'state':'ARCHIVED' if advisory.archived else 'WITHDRAWN' if advisory.withdrawn else 'PUBLISHED' if advisory.published else 'DRAFT','demo':advisory.demo,'created_at':advisory.created_at.isoformat(),'updated_at':advisory.updated_at.isoformat()}
+    row={'id':advisory.id,'title':advisory.title,'category':advisory.category,'body':advisory.body,'location':advisory.location,'severity':advisory.severity,'published':advisory.published,'published_by':advisory.published_by.get_full_name() if advisory.published_by else None,'expires_at':advisory.expires_at.isoformat() if advisory.expires_at else None,'archived':advisory.archived,'withdrawn':advisory.withdrawn,'state':'ARCHIVED' if advisory.archived else 'WITHDRAWN' if advisory.withdrawn else 'PUBLISHED' if advisory.published else 'DRAFT','demo':advisory.demo,'created_at':advisory.created_at.isoformat(),'updated_at':advisory.updated_at.isoformat()}
     if include_history: row['history']=[{'event_type':event.event_type,'actor':event.actor.get_full_name() or event.actor.email if event.actor else 'System','detail':event.detail,'created_at':event.created_at.isoformat()} for event in advisory.history.select_related('actor').order_by('created_at')]
     return row
 
@@ -962,16 +1020,23 @@ def advisory_detail(request,pk):
     if action not in ('SAVE','PUBLISH','WITHDRAW','ARCHIVE'): return error('Choose a valid advisory action.')
     if action=='SAVE':
         if advisory.published or advisory.archived or advisory.withdrawn: return error('Only a draft can be edited.',409)
-        title=str(d.get('title',advisory.title)).strip(); body=str(d.get('body',advisory.body)).strip(); location=str(d.get('location',advisory.location)).strip(); severity=d.get('severity',advisory.severity)
+        title=str(d.get('title',advisory.title)).strip(); body=str(d.get('body',advisory.body)).strip(); location=str(d.get('location',advisory.location)).strip(); category=str(d.get('category',advisory.category)).strip()[:80] or 'Public safety'; severity=d.get('severity',advisory.severity)
         if not title or not body: return error('Advisory title and message are required.')
         if severity not in dict(Advisory.SEVERITIES): return error('Choose a valid advisory severity.')
-        advisory.title=title; advisory.body=body; advisory.location=location; advisory.severity=severity; advisory.save()
-        AdvisoryEvent.objects.create(advisory=advisory,actor=request.user,event_type='UPDATED',detail={'severity':severity})
+        expires_at=None
+        if d.get('expires_at'):
+            expires_at=parse_datetime(str(d['expires_at']))
+            if not expires_at: return error('Advisory expiry must be a valid date and time.')
+            if timezone.is_naive(expires_at): expires_at=timezone.make_aware(expires_at,timezone.get_current_timezone())
+            if expires_at<=timezone.now(): return error('Advisory expiry must be in the future.')
+        advisory.title=title; advisory.category=category; advisory.body=body; advisory.location=location; advisory.severity=severity; advisory.expires_at=expires_at; advisory.save()
+        AdvisoryEvent.objects.create(advisory=advisory,actor=request.user,event_type='UPDATED',detail={'severity':severity,'category':category,'expires_at':expires_at.isoformat() if expires_at else None})
     elif action=='PUBLISH':
         if advisory.archived or advisory.withdrawn: return error('Archived or withdrawn advisories cannot be published.',409)
         if not advisory.title.strip() or not advisory.body.strip(): return error('Advisory title and message are required.')
         if not advisory.published:
-            advisory.published=True; advisory.save(update_fields=['published','updated_at'])
+            if advisory.expires_at and advisory.expires_at<=timezone.now(): return error('Expired advisories cannot be published.',409)
+            advisory.published=True; advisory.published_by=request.user; advisory.save(update_fields=['published','published_by','updated_at'])
             AdvisoryEvent.objects.create(advisory=advisory,actor=request.user,event_type='PUBLISHED',detail={'severity':advisory.severity})
             EventLog.objects.create(actor=request.user,action='Advisory published',target=advisory.title)
             notify_advisory_citizens(advisory)
@@ -1163,9 +1228,11 @@ def tickets(request):
         if not d.get('subject') or not d.get('description'): return error('Subject and description are required.')
         priority=d.get('priority','NORMAL').upper()
         if priority not in {x[0] for x in SupportTicket.PRIORITIES}: return error('Choose a valid ticket priority.')
-        t=SupportTicket.objects.create(user=request.user,subject=d['subject'],category=d.get('category','General'),priority=priority,description=d['description']); return JsonResponse({'ok':True,'id':t.id},status=201)
+        t=SupportTicket.objects.create(user=request.user,subject=d['subject'],category=d.get('category','General'),priority=priority,description=d['description']); SupportTicketEvent.objects.create(ticket=t,actor=request.user,event_type='CREATED',detail={'reference':t.reference,'subject':t.subject}); EventLog.objects.create(actor=request.user,action='Support ticket created',target=t.reference)
+        for admin in Profile.objects.filter(role='ADMIN',approval='APPROVED').select_related('user'): notify(admin.user,'New support ticket',f'{t.reference}: {t.subject}','/admin.html')
+        return JsonResponse({'ok':True,'id':t.id,'reference':t.reference},status=201)
     p=profile(request); qs=SupportTicket.objects.all() if p and p.role=='ADMIN' else SupportTicket.objects.filter(user=request.user)
-    return JsonResponse({'results':[{'id':t.id,'subject':t.subject,'category':t.category,'priority':t.priority,'status':t.status,'description':t.description,'created_at':t.created_at.isoformat(),'updated_at':t.updated_at.isoformat(),'user':t.user.email,'role':getattr(getattr(t.user,'profile',None),'get_role_display',lambda:'Citizen')(),'replies':[{'author':r.author.email if r.author else 'System','body':r.body,'created_at':r.created_at.isoformat()} for r in t.replies.all()]} for t in qs.select_related('user','user__profile').prefetch_related('replies__author').order_by('-created_at')[:100]]})
+    return JsonResponse({'results':[{'id':t.id,'reference':t.reference,'subject':t.subject,'category':t.category,'priority':t.priority,'status':t.status,'description':t.description,'assigned_to':t.assigned_to.email if t.assigned_to else None,'created_at':t.created_at.isoformat(),'updated_at':t.updated_at.isoformat(),'user':t.user.email,'role':getattr(getattr(t.user,'profile',None),'get_role_display',lambda:'Citizen')(),'replies':[{'author':r.author.email if r.author else 'System','body':r.body,'created_at':r.created_at.isoformat()} for r in t.replies.all()],'history':[{'event_type':h.event_type,'detail':h.detail,'actor':h.actor.email if h.actor else 'System','created_at':h.created_at.isoformat()} for h in t.history.select_related('actor').order_by('created_at')]} for t in qs.select_related('user','user__profile','assigned_to').prefetch_related('replies__author','history__actor').order_by('-created_at')[:100]]})
 @login_required
 @require_http_methods(['POST'])
 def ticket_reply(request,pk):
@@ -1174,19 +1241,24 @@ def ticket_reply(request,pk):
     is_admin=bool(p and p.role=='ADMIN')
     if not is_admin and t.user_id!=request.user.id: return error('You cannot view or reply to this ticket.',403)
     d=payload(request); body=(d.get('body') or '').strip(); status=d.get('status') or None; priority=d.get('priority') or None
-    if not is_admin and (status or priority): return error('Only Administrators may change ticket status or priority.',403)
+    if not is_admin and (status or priority or 'assigned_to' in d): return error('Only Administrators may change ticket workflow or assignment.',403)
     if not is_admin and not body: return error('Reply text is required.')
     if is_admin and status is not None and status not in {x[0] for x in SupportTicket.STATUSES}: return error('Choose a valid ticket status.')
     if is_admin and priority is not None and priority not in {x[0] for x in SupportTicket.PRIORITIES}: return error('Choose a valid ticket priority.')
-    if not body and status is None and priority is None: return error('Add a reply or change the ticket status or priority.')
+    if not body and status is None and priority is None and 'assigned_to' not in d: return error('Add a reply or change the ticket workflow.')
     if body: SupportReply.objects.create(ticket=t,author=request.user,body=body)
     changed=[]
     if is_admin and status is not None: t.status=status; changed.append('status')
     if is_admin and priority is not None: t.priority=priority; changed.append('priority')
+    if is_admin and 'assigned_to' in d:
+        assigned=User.objects.filter(pk=d.get('assigned_to'),is_active=True).first() if d.get('assigned_to') else None
+        if d.get('assigned_to') and not assigned: return error('Selected support assignee does not exist.')
+        t.assigned_to=assigned; changed.append('assigned_to')
     if changed: t.save(update_fields=[*changed,'updated_at'])
     elif body: t.save(update_fields=['updated_at'])
     if is_admin and status=='Resolved':
         EventLog.objects.create(actor=request.user,action='Support ticket resolved',target=str(t.pk))
+    if body or changed: SupportTicketEvent.objects.create(ticket=t,actor=request.user,event_type='REPLIED' if body else 'UPDATED',detail={'status':t.status,'priority':t.priority,'assigned_to':t.assigned_to.email if t.assigned_to else None,'reply':body[:500]})
     if is_admin: notify(t.user,'Support ticket reply',f'New reply on ticket: {t.subject}','/citizen.html')
     else:
         for admin in Profile.objects.filter(role='ADMIN',approval='APPROVED').select_related('user'): notify(admin.user,'New support reply',f'{t.subject} has a new reply.','/admin.html')

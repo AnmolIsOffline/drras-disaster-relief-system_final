@@ -63,8 +63,8 @@ def reports(request):
         resolution_events=resolution_events.filter(emergency__accepted_by=p.organization)
         shelters=shelters.filter(organization=p.organization)
         inventory=inventory.filter(organization=p.organization)
-    real_total=donations.filter(status='CONFIRMED',demo=False).aggregate(amount=Sum('amount'))['amount'] or 0
-    demo_total=donations.filter(status='CONFIRMED',demo=True).aggregate(amount=Sum('amount'))['amount'] or 0
+    real_total=donations.filter(status='PAYMENT_VERIFIED',demo=False).aggregate(amount=Sum('amount'))['amount'] or 0
+    demo_total=donations.filter(status='DEMO_RECORDED',demo=True).aggregate(amount=Sum('amount'))['amount'] or 0
     organizations=Organization.objects.all()
     if p.role in ('GOV','NGO'): organizations=organizations.filter(pk=p.organization_id)
     org_activity=[]

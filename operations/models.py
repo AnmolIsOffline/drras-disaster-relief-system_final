@@ -39,12 +39,14 @@ class TrainingCompletion(models.Model):
 class Emergency(models.Model):
     TYPES=[('Flood','Flood'),('Fire','Fire'),('Medical','Medical'),('Landslide','Landslide'),('Cyclone','Cyclone'),('Other','Other')]
     PRIORITIES=[('CRITICAL','Critical'),('HIGH','High'),('MEDIUM','Medium'),('LOW','Low')]
+    SEVERITIES=[('LOW','Low'),('MODERATE','Moderate'),('SEVERE','Severe'),('CRITICAL','Critical')]
     STATUSES=[('OPEN','Open'),('ACCEPTED','Accepted'),('IN_PROGRESS','In progress'),('RESOLVED','Resolved'),('CANCELLED','Cancelled')]
     reference=models.CharField(max_length=16,unique=True); reporter=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name='emergencies')
-    category=models.CharField(max_length=24,choices=TYPES); priority=models.CharField(max_length=12,choices=PRIORITIES,default='MEDIUM'); description=models.TextField()
-    location=models.CharField(max_length=180); latitude=models.FloatField(null=True,blank=True); longitude=models.FloatField(null=True,blank=True); affected=models.PositiveIntegerField(default=1); required_skills=models.CharField(max_length=240,blank=True); needs_transport=models.BooleanField(default=False); required_vehicle_capacity=models.PositiveIntegerField(default=0)
+    category=models.CharField(max_length=24,choices=TYPES); severity=models.CharField(max_length=12,choices=SEVERITIES,default='MODERATE'); priority=models.CharField(max_length=12,choices=PRIORITIES,default='MEDIUM'); description=models.TextField()
+    location=models.CharField(max_length=180); address=models.CharField(max_length=180,blank=True); district=models.CharField(max_length=40,blank=True); latitude=models.FloatField(null=True,blank=True); longitude=models.FloatField(null=True,blank=True); affected=models.PositiveIntegerField(null=True,blank=True,default=1); injured=models.PositiveIntegerField(null=True,blank=True,default=0); vulnerable_counts=models.JSONField(default=dict,blank=True); required_skills=models.CharField(max_length=240,blank=True); needs_transport=models.BooleanField(default=False); required_vehicle_capacity=models.PositiveIntegerField(default=0)
+    priority_override_by=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL,related_name='emergency_priority_overrides'); priority_override_reason=models.TextField(blank=True); priority_overridden_at=models.DateTimeField(null=True,blank=True)
     status=models.CharField(max_length=16,choices=STATUSES,default='OPEN',db_index=True); verification=models.CharField(max_length=20,default='Pending'); demo=models.BooleanField(default=False)
-    accepted_by=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='accepted_emergencies'); created_at=models.DateTimeField(auto_now_add=True)
+    accepted_by=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='accepted_emergencies'); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
     def __str__(self): return self.reference
 
 class EventLog(models.Model):
@@ -98,16 +100,18 @@ class DispatchEvent(models.Model):
 
 class DeliveryRecord(models.Model):
     STATUSES=[('WAITING_CONFIRMATION','Waiting for citizen confirmation'),('CONFIRMED','Received by citizen'),('ISSUE_REPORTED','Issue reported by citizen')]
-    dispatch=models.OneToOneField(Dispatch,on_delete=models.CASCADE,related_name='delivery_record'); emergency=models.ForeignKey(Emergency,on_delete=models.CASCADE,related_name='delivery_records'); driver=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name='submitted_deliveries'); vehicle=models.ForeignKey(Vehicle,null=True,blank=True,on_delete=models.SET_NULL,related_name='delivery_records'); organization=models.ForeignKey(Organization,on_delete=models.CASCADE,related_name='delivery_records'); recipient_name=models.CharField(max_length=160); address=models.CharField(max_length=240); items=models.JSONField(default=list); delivered_at=models.DateTimeField(); photo=models.FileField(upload_to=delivery_photo_path); remarks=models.TextField(blank=True); status=models.CharField(max_length=24,choices=STATUSES,default='WAITING_CONFIRMATION',db_index=True); citizen_responded_at=models.DateTimeField(null=True,blank=True); issue_details=models.TextField(blank=True); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
+    dispatch=models.OneToOneField(Dispatch,on_delete=models.CASCADE,related_name='delivery_record'); emergency=models.ForeignKey(Emergency,on_delete=models.CASCADE,related_name='delivery_records'); driver=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name='submitted_deliveries'); vehicle=models.ForeignKey(Vehicle,null=True,blank=True,on_delete=models.SET_NULL,related_name='delivery_records'); organization=models.ForeignKey(Organization,on_delete=models.CASCADE,related_name='delivery_records'); recipient_name=models.CharField(max_length=160); address=models.CharField(max_length=240); items=models.JSONField(default=list); delivered_at=models.DateTimeField(); photo=models.FileField(upload_to=delivery_photo_path,blank=True); remarks=models.TextField(blank=True); demo=models.BooleanField(default=False); status=models.CharField(max_length=24,choices=STATUSES,default='WAITING_CONFIRMATION',db_index=True); citizen_responded_at=models.DateTimeField(null=True,blank=True); issue_details=models.TextField(blank=True); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
 
 class FundTransaction(models.Model):
     KINDS=[('ALLOCATION','Allocation'),('EXPENDITURE','Expenditure'),('DEMO_DONATION','Demo donation')]
     organization=models.ForeignKey(Organization,on_delete=models.CASCADE,related_name='fund_transactions'); kind=models.CharField(max_length=16,choices=KINDS); amount=models.DecimalField(max_digits=14,decimal_places=2); source=models.CharField(max_length=140); reference=models.CharField(max_length=48,unique=True); note=models.TextField(blank=True); actor=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,on_delete=models.SET_NULL); donation=models.OneToOneField('Donation',null=True,blank=True,on_delete=models.SET_NULL,related_name='fund_ledger_entry'); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True)
 
 class Shelter(models.Model):
-    name=models.CharField(max_length=140,unique=True); organization=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='shelters'); location=models.CharField(max_length=180); shelter_type=models.CharField(max_length=40,default='Shelter'); description=models.TextField(blank=True); latitude=models.FloatField(); longitude=models.FloatField(); capacity=models.PositiveIntegerField(); occupancy=models.PositiveIntegerField(default=0); status=models.CharField(max_length=20,default='Open'); demo=models.BooleanField(default=False); updated_at=models.DateTimeField(auto_now=True)
+    name=models.CharField(max_length=140,unique=True); organization=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='shelters'); location=models.CharField(max_length=180); address=models.CharField(max_length=180,blank=True); district=models.CharField(max_length=40,blank=True); contact_phone=models.CharField(max_length=30,blank=True); shelter_type=models.CharField(max_length=40,default='Shelter'); description=models.TextField(blank=True); latitude=models.FloatField(); longitude=models.FloatField(); capacity=models.PositiveIntegerField(); occupancy=models.PositiveIntegerField(default=0); status=models.CharField(max_length=20,default='Open'); demo=models.BooleanField(default=False); updated_at=models.DateTimeField(auto_now=True)
     @property
-    def available(self): return max(0,self.capacity-self.occupancy)
+    def available(self): return max(0,self.capacity-self.occupancy) if self.status=='Open' else 0
+    class Meta:
+        constraints=[models.CheckConstraint(condition=Q(occupancy__lte=models.F('capacity')),name='shelter_occupancy_lte_capacity')]
 
 class ShelterEvent(models.Model):
     shelter=models.ForeignKey(Shelter,on_delete=models.CASCADE,related_name='history'); actor=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL); event_type=models.CharField(max_length=32); changes=models.JSONField(default=dict); created_at=models.DateTimeField(auto_now_add=True)
@@ -121,16 +125,21 @@ class InventoryMovement(models.Model):
 
 class DonationCampaign(models.Model):
     name=models.CharField(max_length=150); recipient=models.CharField(max_length=150); organization=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.SET_NULL,related_name='donation_campaigns'); description=models.TextField(); goal_amount=models.DecimalField(max_digits=14,decimal_places=2,default=0); currency=models.CharField(max_length=3,default='INR'); published=models.BooleanField(default=False); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True)
-    def confirmed_total(self): return self.donations.filter(status='CONFIRMED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
-    def demo_confirmed_total(self): return self.donations.filter(status='CONFIRMED',demo=True).aggregate(total=models.Sum('amount'))['total'] or 0
+    def confirmed_total(self): return self.donations.filter(status='PAYMENT_VERIFIED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
+    def submitted_total(self): return self.donations.filter(status='SUBMITTED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
+    def accepted_total(self): return self.donations.filter(status='ACCEPTED',demo=False).aggregate(total=models.Sum('amount'))['total'] or 0
+    def demo_confirmed_total(self): return self.donations.filter(status='DEMO_RECORDED',demo=True).aggregate(total=models.Sum('amount'))['total'] or 0
 
 class Donation(models.Model):
-    STATUSES=[('PENDING','Pending'),('CONFIRMED','Confirmed'),('FAILED','Failed')]
-    donor=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name='donations'); campaign=models.ForeignKey(DonationCampaign,null=True,blank=True,on_delete=models.PROTECT,related_name='donations'); amount=models.DecimalField(max_digits=12,decimal_places=2); currency=models.CharField(max_length=3,default='INR'); status=models.CharField(max_length=16,choices=STATUSES,default='PENDING'); reference=models.CharField(max_length=40,unique=True); provider_reference=models.CharField(max_length=120,blank=True); failure_reason=models.CharField(max_length=240,blank=True); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True); confirmed_at=models.DateTimeField(null=True,blank=True)
+    STATUSES=[('SUBMITTED','Submitted for review'),('ACCEPTED','Accepted by recipient'),('REJECTED','Rejected by recipient'),('PAYMENT_VERIFIED','Payment verified'),('DEMO_RECORDED','Demo ledger transaction'),('PENDING','Legacy pending'),('CONFIRMED','Legacy confirmed'),('FAILED','Legacy failed')]
+    donor=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name='donations'); organization=models.ForeignKey(Organization,null=True,blank=True,on_delete=models.PROTECT,related_name='contributions'); campaign=models.ForeignKey(DonationCampaign,null=True,blank=True,on_delete=models.PROTECT,related_name='donations'); amount=models.DecimalField(max_digits=12,decimal_places=2); currency=models.CharField(max_length=3,default='INR'); status=models.CharField(max_length=24,choices=STATUSES,default='SUBMITTED',db_index=True); reference=models.CharField(max_length=40,unique=True); provider_reference=models.CharField(max_length=120,blank=True); failure_reason=models.CharField(max_length=240,blank=True); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True); confirmed_at=models.DateTimeField(null=True,blank=True)
+
+class DonationEvent(models.Model):
+    donation=models.ForeignKey(Donation,on_delete=models.CASCADE,related_name='history'); actor=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL); event_type=models.CharField(max_length=32); from_status=models.CharField(max_length=24,blank=True); to_status=models.CharField(max_length=24); note=models.TextField(blank=True); created_at=models.DateTimeField(auto_now_add=True)
 
 class Advisory(models.Model):
     SEVERITIES=[('LOW','Low'),('MEDIUM','Medium'),('HIGH','High'),('CRITICAL','Critical')]
-    title=models.CharField(max_length=180); body=models.TextField(); location=models.CharField(max_length=160,blank=True); severity=models.CharField(max_length=12,choices=SEVERITIES,default='MEDIUM'); published=models.BooleanField(default=False); archived=models.BooleanField(default=False); withdrawn=models.BooleanField(default=False); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
+    title=models.CharField(max_length=180); category=models.CharField(max_length=80,default='Public safety'); body=models.TextField(); location=models.CharField(max_length=160,blank=True); severity=models.CharField(max_length=12,choices=SEVERITIES,default='MEDIUM'); published=models.BooleanField(default=False); archived=models.BooleanField(default=False); withdrawn=models.BooleanField(default=False); demo=models.BooleanField(default=False); published_by=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL,related_name='published_advisories'); expires_at=models.DateTimeField(null=True,blank=True); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
 
 class AdvisoryEvent(models.Model):
     EVENTS=[('DRAFTED','Drafted'),('UPDATED','Draft updated'),('PUBLISHED','Published'),('WITHDRAWN','Withdrawn'),('ARCHIVED','Archived')]
@@ -145,7 +154,13 @@ class ZoneApplicationEvent(models.Model):
 class SupportTicket(models.Model):
     PRIORITIES=[('LOW','Low'),('NORMAL','Normal'),('HIGH','High'),('URGENT','Urgent')]
     STATUSES=[('Open','Open'),('In Progress','In Progress'),('Resolved','Resolved')]
-    user=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE); subject=models.CharField(max_length=180); category=models.CharField(max_length=80,default='General'); priority=models.CharField(max_length=12,choices=PRIORITIES,default='NORMAL'); description=models.TextField(); status=models.CharField(max_length=20,choices=STATUSES,default='Open'); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE); reference=models.CharField(max_length=24,unique=True); assigned_to=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL,related_name='assigned_support_tickets'); subject=models.CharField(max_length=180); category=models.CharField(max_length=80,default='General'); priority=models.CharField(max_length=12,choices=PRIORITIES,default='NORMAL'); description=models.TextField(); status=models.CharField(max_length=20,choices=STATUSES,default='Open'); demo=models.BooleanField(default=False); created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
+    def save(self,*args,**kwargs):
+        if not self.reference: self.reference='SUP-'+uuid.uuid4().hex[:12].upper()
+        super().save(*args,**kwargs)
+
+class SupportTicketEvent(models.Model):
+    ticket=models.ForeignKey(SupportTicket,on_delete=models.CASCADE,related_name='history'); actor=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL); event_type=models.CharField(max_length=32); detail=models.JSONField(default=dict,blank=True); created_at=models.DateTimeField(auto_now_add=True)
 
 class SupportReply(models.Model):
     ticket=models.ForeignKey(SupportTicket,on_delete=models.CASCADE,related_name='replies'); author=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,on_delete=models.SET_NULL); body=models.TextField(); created_at=models.DateTimeField(auto_now_add=True)

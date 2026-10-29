@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from operations.models import Organization, Profile, Emergency, EmergencyEvent, Shelter, Inventory, Donation, DonationCampaign, Advisory, SupportTicket, SupportReply, Assignment, ZoneApplication, Vehicle, Dispatch, DispatchEvent, FundTransaction, SafetyTraining, TrainingCompletion, AssignmentEvent, AdvisoryEvent, AllocationAuthorization, AllocationAuthorizationEvent, EventLog, InventoryMovement, Notification, ShelterEvent, SystemPreference, ZoneApplicationEvent
+from operations.models import Organization, Profile, Emergency, EmergencyEvent, Shelter, Inventory, Donation, DonationCampaign, Advisory, SupportTicket, SupportReply, SupportTicketEvent, DonationEvent, Assignment, ZoneApplication, Vehicle, Dispatch, DispatchEvent, FundTransaction, SafetyTraining, TrainingCompletion, AssignmentEvent, AdvisoryEvent, AllocationAuthorization, AllocationAuthorizationEvent, EventLog, InventoryMovement, Notification, ShelterEvent, SystemPreference, ZoneApplicationEvent
 from django.utils import timezone
 User=get_user_model()
 LOCAL_TEST_PASSWORD='PunjabRelief2026!'
@@ -30,6 +30,7 @@ class Command(BaseCommand):
     def handle(self,*args,**opts):
         if Profile.objects.filter(details__seed_key__isnull=False).exists():
             call_command('normalize_punjab_data')
+            call_command('seed_citizen_data')
             self.stdout.write(self.style.SUCCESS('Existing seeded records are already normalized; no accounts or operational records were recreated.'))
             return
         gov,_=Organization.objects.get_or_create(name='Maharashtra State Response Cell',defaults={'kind':'GOV','zone':'Maharashtra','demo':True})
@@ -159,16 +160,13 @@ class Command(BaseCommand):
         campaigns={}
         for org,name,recipient,description,goal in campaign_rows:
             campaign,_=DonationCampaign.objects.get_or_create(name=name,organization=org,defaults={'recipient':recipient,'description':description,'goal_amount':goal,'published':True,'demo':True}); campaigns[name]=campaign
-        donation_rows=[('DON-DEMO-001','2500.00','CONFIRMED','Punjab Shelter Essentials Drive'),('DON-DEMO-002','750.00','PENDING','Sutlej First Aid & Medical Stock'),('DON-DEMO-003','300.00','FAILED','Community Food Parcels')]
+        donation_rows=[('DON-DEMO-001','2500.00','SUBMITTED','Punjab Shelter Essentials Drive'),('DON-DEMO-002','750.00','SUBMITTED','Sutlej First Aid & Medical Stock'),('DON-DEMO-003','300.00','REJECTED','Community Food Parcels')]
         for ref,amount,status,campaign_name in donation_rows:
             donation,created=Donation.objects.get_or_create(reference=ref,defaults={'donor':users['citizen@drras.demo'],'campaign':campaigns[campaign_name],'amount':amount,'currency':'INR','status':status,'demo':True})
-            if not created:
-                donation.campaign=campaigns[campaign_name]; donation.amount=amount; donation.currency='INR'; donation.status=status; donation.demo=True
-            if status=='CONFIRMED' and not donation.confirmed_at: donation.confirmed_at=donation.created_at or timezone.now()
-            if status=='FAILED': donation.failure_reason='Demonstration failure state'
-            donation.save()
-            if donation.demo and donation.status=='CONFIRMED' and donation.campaign_id and donation.campaign.organization_id:
-                FundTransaction.objects.get_or_create(reference='DEMO-'+donation.reference,defaults={'organization':donation.campaign.organization,'kind':'DEMO_DONATION','amount':donation.amount,'source':f'Demo donation · {donation.campaign.name}'[:140],'note':'Simulated citizen transfer; no money was transferred.','actor':donation.donor,'donation':donation,'demo':True})
+            if created:
+                DonationEvent.objects.get_or_create(donation=donation,event_type=status,to_status=status,defaults={'actor':donation.donor,'note':'Fictional sample record. No payment was processed.'})
+                if status=='REJECTED':
+                    donation.failure_reason='Demonstration sample rejected state'; donation.save(update_fields=['failure_reason'])
         ticket_rows=[
             (users['citizen@drras.demo'],'Shelter accessibility information','Shelters','Please confirm wheelchair access at the nearest relief centre.','In Progress','HIGH'),
             (users['volunteer@drras.demo'],'Field kit collection point','Volunteer support','Please confirm the collection window for first-aid kits before my assigned shift.','Open','NORMAL'),
@@ -234,4 +232,5 @@ class Command(BaseCommand):
         for action,target,actor,detail in [('Demo request accepted','DR-DEMO-103',users['sahyog@drras.demo'],{'organization':'Sahyog Relief Network'}),('Demo response underway','DR-DEMO-104',users['official@drras.demo'],{'organization':'Maharashtra State Response Cell'}),('Demo relief request resolved','DR-DEMO-105',users['seva@drras.demo'],{'organization':'Seva Aid Collective'}),('Demo stock ledger initialized','Pune Central Warehouse/Water kits',users['official@drras.demo'],{'opening_balance':400,'receipt':120,'issue':40}),('Demo shelter snapshot recorded','Ratnagiri Community Hall',users['official@drras.demo'],{'occupancy':shelter.occupancy,'capacity':shelter.capacity})]:
             EventLog.objects.get_or_create(action=action,target=target,defaults={'actor':actor,'detail':{'demo':True,**detail}})
         call_command('normalize_punjab_data')
+        call_command('seed_citizen_data')
         self.stdout.write(self.style.SUCCESS('Punjab relief records are ready. Local account password: PunjabRelief2026!'))
