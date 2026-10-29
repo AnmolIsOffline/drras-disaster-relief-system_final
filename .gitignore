@@ -5,5 +5,5 @@ __pycache__/
 db.sqlite3-journal
 db.sqlite3-shm
 db.sqlite3-wal
-work/
+work/tmp/
 staticfiles/
